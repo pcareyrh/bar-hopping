@@ -2,16 +2,11 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps for Playwright + pdfplumber
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers
-RUN playwright install --with-deps chromium
+# apt-get update must run in the same layer as playwright --with-deps
+RUN apt-get update && playwright install --with-deps chromium && rm -rf /var/lib/apt/lists/*
 
 COPY app/ app/
 
