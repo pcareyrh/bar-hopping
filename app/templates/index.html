@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Home{% endblock %}
+
+{% block content %}
+<div class="flex flex-col items-center justify-center min-h-[60vh] text-center gap-8">
+
+  <div>
+    <h1 class="text-3xl font-bold mb-2">Bar Hopping</h1>
+    <p class="text-gray-500 max-w-sm">
+      Personalised time predictions for your dog agility runs at NSW TopDog trials.
+    </p>
+  </div>
+
+  <form method="POST" action="/sessions">
+    <button
+      type="submit"
+      class="bg-brand text-white px-8 py-3 rounded-xl text-lg font-semibold shadow hover:bg-brand-dark transition"
+    >
+      Start Planning
+    </button>
+  </form>
+
+  <div class="w-full max-w-sm">
+    <p class="text-sm text-gray-400 mb-2">Already have a plan? Paste your link:</p>
+    <form
+      class="flex gap-2"
+      onsubmit="event.preventDefault(); window.location = document.getElementById('resume-link').value;"
+    >
+      <input
+        id="resume-link"
+        type="text"
+        placeholder="https://…/s/your-uuid"
+        class="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
+      />
+      <button
+        type="submit"
+        class="bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 transition"
+      >
+        Go
+      </button>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

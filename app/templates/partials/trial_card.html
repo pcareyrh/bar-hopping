@@ -1,0 +1,23 @@
+<a
+  href="/s/{{ uuid }}/trials/{{ trial.id }}"
+  class="block bg-white rounded-xl shadow-sm border border-gray-100 px-4 py-3 hover:shadow-md transition"
+>
+  <div class="flex items-start justify-between gap-2">
+    <div>
+      <p class="font-semibold text-sm leading-snug">{{ trial.name }}</p>
+      {% if trial.venue %}
+      <p class="text-xs text-gray-500 mt-0.5">{{ trial.venue }}</p>
+      {% endif %}
+    </div>
+    <div class="text-right shrink-0">
+      {% if trial.start_date %}
+      <p class="text-xs font-medium text-gray-600">
+        {{ trial.start_date.strftime("%-d %b %Y") }}
+      </p>
+      {% endif %}
+      {% if trial.id in user_trial_ids %}
+      <span class="inline-block mt-1 text-xs bg-brand text-white px-2 py-0.5 rounded-full">Your entries</span>
+      {% endif %}
+    </div>
+  </div>
+</a>

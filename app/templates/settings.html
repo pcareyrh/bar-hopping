@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="max-w-md mx-auto">
+  <h1 class="text-2xl font-bold mb-1">Timing Defaults</h1>
+  <p class="text-sm text-gray-500 mb-6">
+    These defaults apply to all events. You can override per-run on the schedule page.
+  </p>
+
+  <form method="POST" action="/s/{{ uuid }}/settings" class="space-y-5">
+
+    <div>
+      <label class="block text-sm font-medium mb-1" for="avg_time_per_dog">
+        Average time per dog (seconds)
+      </label>
+      <input
+        id="avg_time_per_dog"
+        name="avg_time_per_dog"
+        type="number"
+        min="30"
+        max="300"
+        value="{{ session.avg_time_per_dog }}"
+        class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand"
+      />
+      <p class="text-xs text-gray-400 mt-1">Typical range: 60–120 s</p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium mb-1" for="default_setup_mins">
+        Ring setup time (minutes)
+      </label>
+      <input
+        id="default_setup_mins"
+        name="default_setup_mins"
+        type="number"
+        min="0"
+        max="60"
+        value="{{ session.default_setup_mins }}"
+        class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand"
+      />
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium mb-1" for="default_walk_mins">
+        Course walk time (minutes)
+      </label>
+      <input
+        id="default_walk_mins"
+        name="default_walk_mins"
+        type="number"
+        min="0"
+        max="30"
+        value="{{ session.default_walk_mins }}"
+        class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand"
+      />
+    </div>
+
+    <button
+      type="submit"
+      class="w-full bg-brand text-white py-3 rounded-xl font-semibold text-base hover:bg-brand-dark transition"
+    >
+      Save Defaults
+    </button>
+
+  </form>
+</div>
+{% endblock %}

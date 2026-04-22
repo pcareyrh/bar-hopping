@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Bar Hopping{% endblock %} — Agility Planner</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { DEFAULT: '#2563eb', dark: '#1d4ed8' }
+          }
+        }
+      }
+    }
+  </script>
+</head>
+<body class="min-h-full bg-gray-50 text-gray-900 font-sans">
+
+  <!-- Nav -->
+  <header class="bg-brand text-white shadow-md">
+    <div class="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
+      <a href="/" class="font-bold text-lg tracking-tight">🐾 Bar Hopping</a>
+      {% if uuid is defined and uuid %}
+      <nav class="flex gap-4 text-sm">
+        <a href="/s/{{ uuid }}/trials" class="hover:underline">Trials</a>
+        <a href="/s/{{ uuid }}/settings" class="hover:underline">Settings</a>
+      </nav>
+      {% endif %}
+    </div>
+  </header>
+
+  <main class="max-w-2xl mx-auto px-4 py-6">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="text-center text-xs text-gray-400 py-6">
+    Bar Hopping — not affiliated with topdogevents.com.au
+  </footer>
+
+</body>
+</html>

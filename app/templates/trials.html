@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Trials{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-2xl font-bold">NSW Agility Trials</h1>
+  <a href="/s/{{ uuid }}/setup" class="text-sm text-brand hover:underline">Re-sync</a>
+</div>
+
+{% if not trials %}
+<p class="text-gray-500 text-sm">No upcoming trials found. Try again later.</p>
+{% endif %}
+
+{% set user_trials = [] %}
+{% set other_trials = [] %}
+{% for t in trials %}
+  {% if t.id in user_trial_ids %}{% set _ = user_trials.append(t) %}{% else %}{% set _ = other_trials.append(t) %}{% endif %}
+{% endfor %}
+
+{% if user_trials %}
+<h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Your Entries</h2>
+<div class="space-y-3 mb-6">
+  {% for trial in user_trials %}
+  {% include "partials/trial_card.html" %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if other_trials %}
+<h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Other Trials</h2>
+<div class="space-y-3">
+  {% for trial in other_trials %}
+  {% include "partials/trial_card.html" %}
+  {% endfor %}
+</div>
+{% endif %}
+
+<p class="text-xs text-gray-400 mt-6">
+  Your link: <span class="font-mono break-all">{{ request.base_url }}s/{{ uuid }}</span>
+</p>
+{% endblock %}

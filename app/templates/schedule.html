@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Schedule — {{ trial.name }}{% endblock %}
+
+{% block content %}
+<div class="mb-4">
+  <a href="/s/{{ uuid }}/trials/{{ trial.id }}" class="text-sm text-brand hover:underline">&larr; {{ trial.name }}</a>
+</div>
+
+<h1 class="text-xl font-bold mb-1">Predicted Schedule</h1>
+{% if trial.start_date %}
+<p class="text-sm text-gray-500 mb-4">{{ trial.start_date.strftime("%-d %B %Y") }}</p>
+{% endif %}
+
+{% if not predictions %}
+<div class="bg-gray-50 border border-gray-200 rounded-xl px-4 py-6 text-center text-sm text-gray-500">
+  No entries found for this trial. <a href="/s/{{ uuid }}/setup" class="text-brand hover:underline">Re-sync</a> your entries.
+</div>
+{% else %}
+
+<div class="space-y-3">
+  {% for p in predictions %}
+  {% with %}
+  {% include "partials/run_card.html" %}
+  {% endwith %}
+  {% endfor %}
+</div>
+
+{% endif %}
+
+<div class="mt-6 border-t pt-4 text-xs text-gray-400 space-y-1">
+  <p>Defaults: {{ session.avg_time_per_dog }}s/dog · {{ session.default_setup_mins }}min setup · {{ session.default_walk_mins }}min walk</p>
+  <a href="/s/{{ uuid }}/settings" class="text-brand hover:underline">Change defaults</a>
+</div>
+
+{% endblock %}
