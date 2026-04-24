@@ -1,9 +1,11 @@
 variable "encryption_key" {
   type = string
+  default = "testencryption123"
 }
 
 variable "db_password" {
   type = string
+  default = "postgres"
 }
 
 variable "database_url" {
@@ -60,6 +62,7 @@ job "bar-hopping" {
         POSTGRES_DB       = "barhopping"
         POSTGRES_USER     = "barhopping"
         POSTGRES_PASSWORD = var.db_password
+        PGDATA            = "/var/lib/postgresql/data/pgdata"
       }
 
       volume_mount {
