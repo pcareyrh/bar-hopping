@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Syncing...{% endblock %}
+
+{% block content %}
+<div class="max-w-md mx-auto text-center py-16">
+  <div
+    id="sync-status"
+    hx-get="/s/{{ uuid }}/sync-status"
+    hx-trigger="load, every 2s"
+    hx-swap="outerHTML"
+  >
+    <p class="text-gray-500 text-sm animate-pulse">Connecting to TopDog...</p>
+  </div>
+</div>
+{% endblock %}

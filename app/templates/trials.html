@@ -8,7 +8,8 @@
 </div>
 
 {% if not trials %}
-<p class="text-gray-500 text-sm">No upcoming trials found. Try again later.</p>
+<meta http-equiv="refresh" content="5">
+<p class="text-gray-500 text-sm animate-pulse">Fetching upcoming trials from TopDog...</p>
 {% endif %}
 
 {% set user_trials = [] %}
