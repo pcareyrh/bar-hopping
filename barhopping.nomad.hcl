@@ -23,6 +23,11 @@ job "bar-hopping" {
   type        = "service"
   node_pool   = "nfs-nodes"
 
+  update {
+    min_healthy_time  = "10s"
+    healthy_deadline  = "15m"
+    progress_deadline = "300m"
+  }
   # Postgres group — persistent database on the existing CSI volume
   group "db" {
     count = 1
@@ -72,7 +77,7 @@ job "bar-hopping" {
       }
 
       resources {
-        cpu    = 256
+        cpu    = 512
         memory = 512
       }
     }
@@ -157,8 +162,8 @@ job "bar-hopping" {
       }
 
       resources {
-        cpu    = 512
-        memory = 512
+        cpu    = 1024
+        memory = 1024
       }
     }
 
