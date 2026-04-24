@@ -12,7 +12,12 @@ HEIGHT_MAP = {
 }
 
 
-async def sync_user_entries(email: str, password: str, trial_external_ids: list[str]) -> list[dict]:
+async def sync_user_entries(
+    email: str,
+    password: str,
+    trial_external_ids: list[str],
+    on_progress=None,
+) -> list[dict]:
     """
     Log in to TopDog and return a list of entry dicts for the given trials.
 
@@ -40,7 +45,10 @@ async def sync_user_entries(email: str, password: str, trial_external_ids: list[
             await browser.close()
             raise ValueError("TopDog login failed — check credentials")
 
-        for external_id in trial_external_ids:
+        total = len(trial_external_ids)
+        for i, external_id in enumerate(trial_external_ids, start=1):
+            if on_progress:
+                on_progress(i, total)
             trial_entries = await _scrape_my_entries(page, external_id)
             entries.extend(trial_entries)
 

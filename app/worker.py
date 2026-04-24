@@ -5,12 +5,15 @@ from datetime import datetime
 from app.database import SessionLocal
 from app.models import Session, Trial, SessionEntry, CatalogueEntry, ClassSchedule
 from app import crypto
+from app.queue import set_sync_status
 
 
 def sync_session_job(session_uuid: str) -> None:
     """Authenticate with TopDog and populate SessionEntry rows for a session."""
     async def _run():
         from app.scraper.auth import sync_user_entries
+
+        set_sync_status(session_uuid, "Connecting to TopDog…")
 
         db = SessionLocal()
         try:
@@ -23,8 +26,12 @@ def sync_session_job(session_uuid: str) -> None:
             trials = db.query(Trial).all()
             trial_ids = [t.external_id for t in trials]
 
-            entries = await sync_user_entries(email, password, trial_ids)
+            def on_trial(current: int, total: int):
+                set_sync_status(session_uuid, "Fetching your entries from TopDog…", current, total)
 
+            entries = await sync_user_entries(email, password, trial_ids, on_progress=on_trial)
+
+            set_sync_status(session_uuid, "Saving entries…")
             db.query(SessionEntry).filter(SessionEntry.session_uuid == session_uuid).delete()
             for e in entries:
                 ext_id = e.get("trial_external_id")
@@ -46,7 +53,9 @@ def sync_session_job(session_uuid: str) -> None:
             session.topdog_synced_at = datetime.utcnow()
             db.commit()
 
-            for trial in db.query(Trial).all():
+            all_trials = db.query(Trial).all()
+            for i, trial in enumerate(all_trials, start=1):
+                set_sync_status(session_uuid, "Linking catalogue entries…", i, len(all_trials))
                 _resolve_catalogue_links(trial, db)
         finally:
             db.close()

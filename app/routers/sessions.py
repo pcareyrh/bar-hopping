@@ -21,6 +21,13 @@ def create_session(db: DBSession = Depends(get_db)):
     return RedirectResponse(url=f"/s/{session.uuid}/setup", status_code=303)
 
 
+@router.get("/s/{uuid}")
+def resume_session(uuid: str, db: DBSession = Depends(get_db)):
+    session = _get_session(uuid, db)
+    target = "trials" if session.topdog_email else "setup"
+    return RedirectResponse(url=f"/s/{uuid}/{target}", status_code=303)
+
+
 @router.get("/s/{uuid}/setup", response_class=HTMLResponse)
 def setup_page(uuid: str, request: Request, db: DBSession = Depends(get_db)):
     session = _get_session(uuid, db)
@@ -52,12 +59,17 @@ def sync_entries(
 @router.get("/s/{uuid}/syncing", response_class=HTMLResponse)
 def syncing_page(uuid: str, request: Request, db: DBSession = Depends(get_db)):
     _get_session(uuid, db)
-    return templates.TemplateResponse(request, "syncing.html", {"uuid": uuid})
+    from app.queue import get_sync_status
+    status = get_sync_status(uuid) or {"message": "Starting sync…", "current": 0, "total": 0}
+    return templates.TemplateResponse(
+        request, "syncing.html",
+        {"uuid": uuid, **status},
+    )
 
 
 @router.get("/s/{uuid}/sync-status", response_class=HTMLResponse)
-def sync_status(uuid: str):
-    from app.queue import get_redis
+def sync_status(uuid: str, request: Request):
+    from app.queue import get_redis, get_sync_status
     from rq.job import Job
 
     redis = get_redis()
@@ -81,13 +93,10 @@ def sync_status(uuid: str):
             f'</div>'
         )
 
-    return HTMLResponse(
-        f'<div id="sync-status"'
-        f' hx-get="/s/{uuid}/sync-status"'
-        f' hx-trigger="every 2s"'
-        f' hx-swap="outerHTML">'
-        f'<p class="text-gray-500 text-sm animate-pulse">Syncing entries with TopDog...</p>'
-        f'</div>'
+    status = get_sync_status(uuid) or {"message": "Starting sync…", "current": 0, "total": 0}
+    return templates.TemplateResponse(
+        request, "partials/_sync_progress.html",
+        {"uuid": uuid, **status},
     )
 
 
