@@ -6,10 +6,16 @@ from datetime import time as dtime
 from bs4 import BeautifulSoup
 
 
-async def download_and_parse_schedule(url: str) -> list[dict]:
-    async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+async def download_and_parse_schedule(url: str, cookies: dict[str, str] | None = None) -> list[dict]:
+    """Fetch the schedule doc and parse it. TopDog's /schedule/get endpoint
+    redirects unauthenticated requests to /users/sign_in, so callers must
+    pass session cookies obtained from app.scraper.auth.get_authed_cookies."""
+    async with httpx.AsyncClient(follow_redirects=True, timeout=60, cookies=cookies or {}) as client:
         resp = await client.get(url)
         resp.raise_for_status()
+    # If follow_redirects landed us back on a login page, the cookies were missing/expired.
+    if "/users/sign_in" in str(resp.url):
+        raise ValueError(f"schedule download redirected to sign_in — missing auth cookies ({url})")
     content_type = resp.headers.get("content-type", "")
     if "pdf" in content_type or url.lower().endswith(".pdf"):
         return parse_schedule_pdf(resp.content)

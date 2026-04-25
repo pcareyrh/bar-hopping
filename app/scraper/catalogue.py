@@ -13,8 +13,14 @@ def parse_catalogue_xlsx(file_obj: BinaryIO) -> list[dict]:
     Returns list of dicts:
         event_name, cat_number, height_group, run_position,
         height_group_total, nfc, dog_name, handler_name
+
+    Note: we deliberately avoid read_only=True. TopDog's xlsx ships with a
+    stale <dimension> tag in the sheet XML (claims 200 rows when the sheet
+    actually has 400+), which openpyxl trusts in read-only mode and uses to
+    stop iteration early — silently dropping later events like Masters
+    Jumping / Open Jumping. Loading fully forces a real row count.
     """
-    wb = openpyxl.load_workbook(file_obj, read_only=True, data_only=True)
+    wb = openpyxl.load_workbook(file_obj, data_only=True)
     ws = wb.active
     return _parse_worksheet(ws)
 
@@ -24,6 +30,16 @@ async def download_and_parse_catalogue(url: str) -> list[dict]:
         resp = await client.get(url)
         resp.raise_for_status()
     return parse_catalogue_xlsx(io.BytesIO(resp.content))
+
+
+def _normalize_event_name(s: str) -> str:
+    """Catalogue xlsx uses e.g. "Agility Trial - Open Agility (ADO)"; the
+    /entries page uses "Open Agility". Strip the prefix and abbreviation so
+    the two match."""
+    s = s.strip()
+    s = re.sub(r"^Agility\s+Trial\s*-\s*", "", s, flags=re.I)
+    s = re.sub(r"\s*\([A-Z]+\)\s*$", "", s)
+    return s.strip()
 
 
 def _parse_worksheet(ws) -> list[dict]:
@@ -38,7 +54,7 @@ def _parse_worksheet(ws) -> list[dict]:
 
         # Event header row
         if "Agility Trial" in col_a:
-            current_event = col_a
+            current_event = _normalize_event_name(col_a)
             current_height = None
             continue
 

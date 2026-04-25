@@ -1,160 +1,158 @@
-"""Authenticate to TopDog and scrape a user's entries for upcoming trials."""
+"""Authenticate to TopDog and scrape upcoming trials + entries from /entries."""
 import re
+from datetime import datetime, date
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.topdogevents.com.au"
 
-# Height text → integer mm mapping
-HEIGHT_MAP = {
-    "200": 200, "300": 300, "400": 400, "500": 500, "600": 600,
-    "200mm": 200, "300mm": 300, "400mm": 400, "500mm": 500, "600mm": 600,
-}
+HEIGHT_RE = re.compile(r"^\s*(200|300|400|500|600)\s*(mm)?\s*$", re.I)
+CAT_RE = re.compile(r"^\s*(\d{2,4})(NFC)?\s*$", re.I)
+DATE_RE = re.compile(r"(\w+day),\s*(\d{1,2})\s+(\w+)\s+(\d{4})")
+
+
+async def _login(page, email: str, password: str) -> None:
+    """Submit the Devise sign-in form and raise if credentials are rejected."""
+    await page.goto(f"{BASE_URL}/users/sign_in", wait_until="domcontentloaded", timeout=20_000)
+    await page.fill("input[name='user[email]']", email)
+    await page.fill("input[name='user[password]']", password)
+    try:
+        async with page.expect_navigation(wait_until="domcontentloaded", timeout=20_000):
+            await page.click("button[type='submit'], input[type='submit']")
+    except PlaywrightTimeout:
+        pass
+
+    if "/users/sign_in" in page.url or page.url.rstrip("/").endswith("/users/sign_in"):
+        raise ValueError(f"TopDog login failed — check credentials (still at {page.url})")
+
+
+async def get_authed_cookies(email: str, password: str) -> dict[str, str]:
+    """Log in and return the session cookies as a dict suitable for httpx."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        context = await browser.new_context()
+        page = await context.new_page()
+        try:
+            await _login(page, email, password)
+            cookies = await context.cookies()
+        finally:
+            await browser.close()
+    return {c["name"]: c["value"] for c in cookies}
 
 
 async def sync_user_entries(
     email: str,
     password: str,
-    trial_external_ids: list[str],
     on_progress=None,
 ) -> list[dict]:
     """
-    Log in to TopDog and return a list of entry dicts for the given trials.
+    Log in to TopDog, visit /entries, and return trials the user is in.
 
-    Each dict: {
-        trial_external_id, dog_name, height_group, event_name,
-        cat_number, sequence_number, ring_number (nullable)
-    }
+    Each trial dict:
+        {external_id, name, start_date, entries: [
+            {trial_external_id, dog_name, event_name, height_group, cat_number}
+        ]}
+
+    Only trials with upcoming dates are returned (the page itself shows
+    upcoming only, but we also filter by date as a safeguard).
     """
-    entries: list[dict] = []
-
     async with async_playwright() as p:
         browser = await p.chromium.launch()
         context = await browser.new_context()
         page = await context.new_page()
 
-        # Log in
-        await page.goto(f"{BASE_URL}/users/sign_in", wait_until="networkidle")
-        await page.fill("input[name='user[email]']", email)
-        await page.fill("input[name='user[password]']", password)
-        await page.click("input[type='submit'], button[type='submit']")
-        await page.wait_for_load_state("networkidle")
+        if on_progress:
+            on_progress(0, 1)
 
-        # Confirm login succeeded (look for sign-out link)
-        if "sign_in" in page.url:
+        try:
+            await _login(page, email, password)
+        except ValueError:
             await browser.close()
-            raise ValueError("TopDog login failed — check credentials")
+            raise
 
-        total = len(trial_external_ids)
-        for i, external_id in enumerate(trial_external_ids, start=1):
-            if on_progress:
-                on_progress(i, total)
-            trial_entries = await _scrape_my_entries(page, external_id)
-            entries.extend(trial_entries)
-
+        await page.goto(f"{BASE_URL}/entries", wait_until="domcontentloaded", timeout=30_000)
+        html = await page.content()
         await browser.close()
 
-    return entries
+    trials = _parse_entries_page(html)
+    today = date.today()
+    return [t for t in trials if not t["start_date"] or t["start_date"] >= today]
 
 
-async def _scrape_my_entries(page, external_id: str) -> list[dict]:
-    """Navigate to a trial's 'My Entries' tab and extract entry rows."""
-    # TopDog trial entries page — adjust path if needed
-    url = f"{BASE_URL}/trials/{external_id}/entries/my_entries"
-    try:
-        await page.goto(url, wait_until="networkidle", timeout=30_000)
-    except PlaywrightTimeout:
-        return []
-
-    content = await page.content()
-    return _parse_my_entries(external_id, content)
-
-
-def _parse_my_entries(external_id: str, html: str) -> list[dict]:
+def _parse_entries_page(html: str) -> list[dict]:
     soup = BeautifulSoup(html, "html.parser")
-    entries = []
+    trials: list[dict] = []
 
-    # Find entry rows — structure varies by TopDog version; adapt as needed
-    for row in soup.select("table tr, .entry-row, [class*='entry']"):
-        cells = row.find_all(["td", "th"])
-        if len(cells) < 3:
+    for pane in soup.select("div.tab-pane[id^='t']"):
+        m = re.match(r"^t(\d+)$", pane.get("id", ""))
+        if not m:
             continue
+        external_id = m.group(1)
 
-        texts = [c.get_text(strip=True) for c in cells]
-
-        # Skip header rows
-        if any(h in texts[0].lower() for h in ("dog", "class", "event", "height")):
+        strong = pane.find("strong")
+        if not strong:
             continue
+        name = _clean(strong.get_text())
 
-        entry = _extract_entry_fields(texts, external_id)
-        if entry:
-            entries.append(entry)
+        small = pane.find("small", class_="text-muted")
+        start_date = _parse_date(small.get_text(" ", strip=True)) if small else None
 
-    # Fallback: look for structured divs
-    if not entries:
-        for item in soup.select("[data-dog], .dog-entry, .my-entry"):
-            entry = _extract_entry_from_element(item, external_id)
+        entries: list[dict] = []
+        for row in pane.select("table tbody tr"):
+            entry = _parse_entry_row(row, external_id)
             if entry:
                 entries.append(entry)
 
-    return entries
+        trials.append({
+            "external_id": external_id,
+            "name": name,
+            "start_date": start_date,
+            "entries": entries,
+        })
+
+    return trials
 
 
-def _extract_entry_fields(texts: list[str], external_id: str) -> dict | None:
-    """Heuristically extract entry fields from table cell texts."""
-    if len(texts) < 3:
+def _parse_entry_row(row, external_id: str) -> dict | None:
+    cells = row.find_all("td")
+    if len(cells) < 4:
+        return None
+    texts = [_clean(c.get_text(" ", strip=True)) for c in cells]
+    # Column order on /entries: # | Dog | Class | Height | Judge | Status | (edit)
+    cat_raw, dog, event, height_raw = texts[0], texts[1], texts[2], texts[3]
+
+    if not dog or not event:
         return None
 
-    dog_name = None
-    height_group = None
-    event_name = None
     cat_number = None
-    sequence_number = None
-    ring_number = None
+    cm = CAT_RE.match(cat_raw)
+    if cm:
+        cat_number = cm.group(1) + ("NFC" if cm.group(2) else "")
 
-    for i, text in enumerate(texts):
-        # Height detection
-        for key, val in HEIGHT_MAP.items():
-            if text == key or text.lower() == key:
-                height_group = val
-                break
-
-        # Cat number: numeric string optionally ending in NFC
-        if re.match(r"^\d{3}(NFC)?$", text):
-            cat_number = text
-
-        # Sequence number: plain integer
-        if re.match(r"^\d+$", text) and int(text) < 200 and cat_number is None:
-            sequence_number = int(text)
-
-        # Ring number: "Ring 1", "1", etc.
-        rm = re.match(r"^(?:Ring\s*)?(\d+)$", text, re.I)
-        if rm and height_group and ring_number is None:
-            ring_number = rm.group(1)
-
-        # Event name heuristic: contains "Agility" or "Jumping"
-        if any(kw in text for kw in ("Agility", "Jumping", "Gamblers", "Snooker", "Tunnelers")):
-            event_name = text
-
-        # Dog name: first non-numeric, non-height, multi-char field
-        if dog_name is None and len(text) > 2 and not text.isdigit() and "mm" not in text.lower():
-            if not any(kw in text for kw in ("Agility", "Jumping", "Ring", "Cat", "Height")):
-                dog_name = text
-
-    if not (event_name or cat_number):
-        return None
+    height = None
+    hm = HEIGHT_RE.match(height_raw)
+    if hm:
+        height = int(hm.group(1))
 
     return {
         "trial_external_id": external_id,
-        "dog_name": dog_name,
-        "height_group": height_group,
-        "event_name": event_name,
+        "dog_name": dog,
+        "event_name": event,
+        "height_group": height,
         "cat_number": cat_number,
-        "sequence_number": sequence_number,
-        "ring_number": ring_number,
     }
 
 
-def _extract_entry_from_element(el, external_id: str) -> dict | None:
-    texts = [t for t in el.stripped_strings]
-    return _extract_entry_fields(texts, external_id)
+def _parse_date(text: str):
+    m = DATE_RE.search(text or "")
+    if not m:
+        return None
+    _, d, mon, y = m.groups()
+    try:
+        return datetime.strptime(f"{d} {mon} {y}", "%d %B %Y").date()
+    except ValueError:
+        return None
+
+
+def _clean(s: str) -> str:
+    return re.sub(r"\s+", " ", s or "").strip()

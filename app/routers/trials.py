@@ -1,5 +1,3 @@
-from datetime import datetime, timedelta
-
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -11,23 +9,26 @@ from app.models import Session, Trial, CatalogueEntry, ClassSchedule, SessionEnt
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
-CACHE_TTL = timedelta(hours=4)
-
 
 @router.get("/s/{uuid}/trials", response_class=HTMLResponse)
 def trials_list(uuid: str, request: Request, db: DBSession = Depends(get_db)):
     session = _get_session(uuid, db)
-    _trigger_trials_refresh_if_stale(db)
-
-    all_trials = db.query(Trial).order_by(Trial.start_date).all()
     user_trial_ids = {e.trial_id for e in session.entries}
+
+    user_trials = (
+        db.query(Trial)
+        .filter(Trial.id.in_(user_trial_ids))
+        .order_by(Trial.start_date)
+        .all()
+        if user_trial_ids else []
+    )
 
     return templates.TemplateResponse(
         request, "trials.html",
         {
             "session": session,
             "uuid": uuid,
-            "trials": all_trials,
+            "trials": user_trials,
             "user_trial_ids": user_trial_ids,
         },
     )
@@ -72,22 +73,11 @@ def refresh_trial(uuid: str, trial_id: int, db: DBSession = Depends(get_db)):
 
     try:
         from app.queue import get_queue
-        get_queue().enqueue("app.worker.refresh_trial_docs_job", trial.id, job_timeout=300)
+        get_queue().enqueue("app.worker.refresh_trial_docs_job", trial.id, uuid, job_timeout=300)
     except Exception:
         pass
 
     return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}?refreshing=1", status_code=303)
-
-
-def _trigger_trials_refresh_if_stale(db: DBSession) -> None:
-    oldest = db.query(Trial).order_by(Trial.scraped_at).first()
-    now = datetime.utcnow()
-    if oldest is None or oldest.scraped_at is None or (now - oldest.scraped_at) > CACHE_TTL:
-        try:
-            from app.queue import get_queue
-            get_queue().enqueue("app.worker.refresh_trials_job", job_timeout=600)
-        except Exception:
-            pass
 
 
 def _get_session(uuid: str, db: DBSession) -> Session:

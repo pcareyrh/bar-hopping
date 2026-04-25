@@ -27,6 +27,38 @@
 
 {% endif %}
 
+{% if day_blocks %}
+<div class="mt-8">
+  <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Full Day Schedule</h2>
+  {% if trial_start_str %}
+  <p class="text-xs text-gray-400 mb-2">Estimated from a {{ trial_start_str }} start using the catalogue order.</p>
+  {% endif %}
+  <div class="space-y-1">
+    {% for b in day_blocks %}
+    {% if b.setup_start %}
+    <div class="flex items-center justify-between border border-dashed border-gray-200 rounded-lg px-3 py-1.5 text-xs text-gray-500 bg-gray-50">
+      <p>Setup + walk · {{ b.ring }} ring <span class="text-gray-400">({{ b.setup_mins }}+{{ b.walk_mins }} min)</span></p>
+      <p class="font-mono shrink-0 ml-2">{{ b.setup_str }}<span class="text-gray-400"> – {{ b.first_run_str }}</span></p>
+    </div>
+    {% endif %}
+    <div class="flex items-center justify-between border rounded-lg px-3 py-2 text-sm {% if b.is_user_block %}border-brand bg-brand/5{% else %}border-gray-100 bg-white{% endif %}">
+      <div class="min-w-0">
+        <p class="font-medium truncate">
+          {{ b.event_name }}
+          <span class="text-gray-500">· {{ b.height_group }}mm</span>
+          {% if b.is_user_block %}
+          <span class="ml-1 text-xs bg-brand text-white px-1.5 py-0.5 rounded font-medium align-middle">You</span>
+          {% endif %}
+        </p>
+        <p class="text-xs text-gray-400">{{ b.ring }} ring · {{ b.count }} dog{{ "s" if b.count != 1 else "" }}</p>
+      </div>
+      <p class="font-mono text-xs text-gray-600 shrink-0 ml-2">{{ b.first_run_str }}<span class="text-gray-400"> – {{ b.last_run_str }}</span></p>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 <div class="mt-6 border-t pt-4 text-xs text-gray-400 space-y-1">
   <p>Defaults: {{ session.avg_time_per_dog }}s/dog · {{ session.default_setup_mins }}min setup · {{ session.default_walk_mins }}min walk</p>
   <a href="/s/{{ uuid }}/settings" class="text-brand hover:underline">Change defaults</a>
