@@ -1,8 +1,9 @@
+import re
 import uuid
 from datetime import datetime, date, time
 from sqlalchemy import (
-    Column, String, Integer, Boolean, DateTime, Date, Time,
-    ForeignKey, UniqueConstraint, func,
+    Column, String, Integer, Boolean, DateTime, Date, Time, Float,
+    ForeignKey, UniqueConstraint, Index, func,
 )
 from sqlalchemy.orm import relationship
 from app.database import Base
@@ -13,6 +14,34 @@ def _new_uuid():
 
 
 HEIGHT_GROUPS = (200, 300, 400, 500, 600)
+
+HANDLER_PLACEHOLDER = "-"
+
+
+def normalise_name(s: str | None) -> str | None:
+    """Normalise a dog or handler name for matching.
+
+    Lowercase, strip "(AI)" / "(ai)" parenthetical, drop punctuation,
+    collapse whitespace. Returns None for empty input.
+    """
+    if not s:
+        return None
+    s = s.lower()
+    s = re.sub(r"\(\s*ai\s*\)", "", s)
+    s = re.sub(r"[^a-z0-9 ]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s or None
+
+
+def normalise_handler(s: str | None) -> str:
+    """Normalise a handler name, falling back to HANDLER_PLACEHOLDER.
+
+    Always returns a non-empty string so the (name_normalised, handler_normalised)
+    composite unique index treats unknown handlers as a single bucket rather
+    than as distinct NULLs.
+    """
+    n = normalise_name(s)
+    return n or HANDLER_PLACEHOLDER
 
 
 class Session(Base):
@@ -31,6 +60,7 @@ class Session(Base):
     tpd_600 = Column(Integer, default=90)
     default_setup_mins = Column(Integer, default=10)
     default_walk_mins = Column(Integer, default=10)
+    last_results_view_at = Column(DateTime, nullable=True)
 
     entries = relationship("SessionEntry", back_populates="session", cascade="all, delete-orphan")
 
@@ -52,13 +82,17 @@ class Trial(Base):
     end_date = Column(Date, nullable=True)
     venue = Column(String, nullable=True)
     state = Column(String, nullable=True)
+    discipline = Column(Integer, nullable=True)         # TopDog discipline id (1=Agility)
     schedule_doc_url = Column(String, nullable=True)
     catalogue_doc_url = Column(String, nullable=True)
     scraped_at = Column(DateTime, nullable=True)
+    results_synced_at = Column(DateTime, nullable=True)
+    results_status = Column(String, nullable=True)      # ok | none | error:<short>
 
     catalogue_entries = relationship("CatalogueEntry", back_populates="trial", cascade="all, delete-orphan")
     class_schedules = relationship("ClassSchedule", back_populates="trial", cascade="all, delete-orphan")
     session_entries = relationship("SessionEntry", back_populates="trial")
+    trial_results = relationship("TrialResult", back_populates="trial", cascade="all, delete-orphan")
 
 
 class CatalogueEntry(Base):
@@ -112,3 +146,50 @@ class SessionEntry(Base):
     session = relationship("Session", back_populates="entries")
     trial = relationship("Trial", back_populates="session_entries")
     catalogue_entry = relationship("CatalogueEntry")
+
+
+class Dog(Base):
+    __tablename__ = "dogs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(String, nullable=False)
+    name_normalised = Column(String, nullable=False, index=True)
+    handler_name = Column(String, nullable=True)
+    handler_normalised = Column(String, nullable=False, index=True)  # '-' placeholder when unknown
+    first_seen_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint("name_normalised", "handler_normalised"),)
+
+
+class TrialResult(Base):
+    __tablename__ = "trial_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trial_id = Column(Integer, ForeignKey("trials.id"), nullable=False, index=True)
+    sub_trial_external_id = Column(String, nullable=False, index=True)
+    sub_trial_label = Column(String, nullable=True)
+    class_slug = Column(String, nullable=False, index=True)
+    class_label = Column(String, nullable=False)
+    height_group = Column(Integer, nullable=False, index=True)
+    sct_seconds = Column(Float, nullable=True)
+    course_length_m = Column(Integer, nullable=True)
+    judge_name = Column(String, nullable=True)
+    dog_id = Column(Integer, ForeignKey("dogs.id"), nullable=True, index=True)
+    dog_name_raw = Column(String, nullable=False)
+    handler_name_raw = Column(String, nullable=True)
+    time_seconds = Column(Float, nullable=True)
+    total_faults = Column(Float, nullable=True)
+    status = Column(String, nullable=True)              # Q | DQ | ABS | None
+    nfc = Column(Boolean, default=False)
+    row_index = Column(Integer, nullable=False)
+    scraped_at = Column(DateTime, default=datetime.utcnow)
+
+    trial = relationship("Trial", back_populates="trial_results")
+    dog = relationship("Dog")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "trial_id", "sub_trial_external_id", "class_slug", "height_group", "row_index",
+            name="uq_trial_result_row",
+        ),
+    )

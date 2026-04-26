@@ -1,0 +1,45 @@
+<a href="/s/{{ uuid }}/results/dog/{{ s.dog_id }}"
+   class="block bg-white rounded-xl border border-gray-100 shadow-sm px-4 py-3 hover:shadow-md transition">
+  <div class="flex items-start justify-between gap-2">
+    <div class="min-w-0">
+      <p class="font-semibold truncate">{{ s.name }}</p>
+      <p class="text-xs text-gray-500">
+        {{ s.total }} run{{ '' if s.total == 1 else 's' }} across {{ s.trial_count }} trial{{ '' if s.trial_count == 1 else 's' }}
+        {% if s.first_date and s.last_date %}
+        · {{ s.first_date.strftime("%b %Y") }} – {{ s.last_date.strftime("%b %Y") }}
+        {% endif %}
+      </p>
+    </div>
+    <span class="text-xs text-brand">View &rarr;</span>
+  </div>
+
+  <dl class="grid grid-cols-3 gap-2 mt-3 text-center">
+    <div>
+      <dt class="text-[10px] uppercase tracking-wider text-gray-400">Clean</dt>
+      <dd class="text-sm font-medium">
+        {{ s.clean }}
+        {% if s.clean_rate is not none %}
+        <span class="text-xs text-gray-500">({{ "%.0f"|format(s.clean_rate * 100) }}%)</span>
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt class="text-[10px] uppercase tracking-wider text-gray-400">Sub-SCT</dt>
+      <dd class="text-sm font-medium">
+        {{ s.sub_sct }}
+        {% if s.sub_sct_rate is not none %}
+        <span class="text-xs text-gray-500">({{ "%.0f"|format(s.sub_sct_rate * 100) }}%)</span>
+        {% endif %}
+      </dd>
+    </div>
+    <div>
+      <dt class="text-[10px] uppercase tracking-wider text-gray-400">DQ</dt>
+      <dd class="text-sm font-medium">
+        {{ s.dq }}
+        {% if s.dq_rate is not none %}
+        <span class="text-xs text-gray-500">({{ "%.0f"|format(s.dq_rate * 100) }}%)</span>
+        {% endif %}
+      </dd>
+    </div>
+  </dl>
+</a>

@@ -27,6 +27,7 @@
       {% if uuid is defined and uuid %}
       <nav class="flex gap-4 text-sm items-center">
         <a href="/s/{{ uuid }}/trials" class="hover:underline">Trials</a>
+        <a href="/s/{{ uuid }}/results" class="hover:underline">Past Results</a>
         <a href="/s/{{ uuid }}/settings" class="hover:underline">Settings</a>
         <form method="POST" action="/s/{{ uuid }}/logout">
           <button type="submit" class="hover:underline">Log out</button>

@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Past Results{% endblock %}
+
+{% block content %}
+<div class="flex items-center justify-between mb-4">
+  <h1 class="text-2xl font-bold">Past Results</h1>
+  <a href="/s/{{ uuid }}/trials" class="text-sm text-brand hover:underline">Trials &rarr;</a>
+</div>
+
+{% if not dogs_known %}
+<div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 mb-4 text-sm">
+  No dogs linked to this session yet. <a href="/s/{{ uuid }}/setup" class="underline">Sync your TopDog account</a> to import your dogs, then come back.
+</div>
+{% elif not stats %}
+<div class="bg-blue-50 border border-blue-200 text-blue-700 rounded-lg px-4 py-3 mb-4 text-sm">
+  We don't have any past NSW agility runs matched to your dogs yet. The weekly refresh picks up new trials each Monday — check back, or ask the admin to run a backfill.
+</div>
+{% else %}
+
+<!-- Per-dog stats cards -->
+<section class="space-y-3 mb-6">
+  {% for s in stats %}
+  {% include "partials/dog_stats_card.html" %}
+  {% endfor %}
+</section>
+
+<!-- Filter bar -->
+<form method="GET" action="/s/{{ uuid }}/results" class="bg-white border border-gray-100 rounded-xl px-3 py-3 mb-4 grid grid-cols-2 gap-2 text-sm">
+  <select name="dog_id" class="border rounded px-2 py-1 col-span-2 sm:col-span-1">
+    <option value="">All dogs</option>
+    {% for s in stats %}
+    <option value="{{ s.dog_id }}" {% if filters.dog_id == s.dog_id %}selected{% endif %}>{{ s.name }}</option>
+    {% endfor %}
+  </select>
+  <select name="class_slug" class="border rounded px-2 py-1">
+    <option value="">All classes</option>
+    {% for c in options.classes %}
+    <option value="{{ c.slug }}" {% if filters.class_slug == c.slug %}selected{% endif %}>{{ c.label }}</option>
+    {% endfor %}
+  </select>
+  <select name="height_group" class="border rounded px-2 py-1">
+    <option value="">All heights</option>
+    {% for h in options.heights %}
+    <option value="{{ h }}" {% if filters.height_group == h %}selected{% endif %}>{{ h }}mm</option>
+    {% endfor %}
+  </select>
+  <select name="status" class="border rounded px-2 py-1">
+    <option value="">Any result</option>
+    <option value="clean" {% if filters.status == 'clean' %}selected{% endif %}>Clean (0 faults)</option>
+    <option value="sub_sct" {% if filters.status == 'sub_sct' %}selected{% endif %}>Under SCT</option>
+    <option value="dq" {% if filters.status == 'dq' %}selected{% endif %}>Disqualified</option>
+    <option value="abs" {% if filters.status == 'abs' %}selected{% endif %}>Absent</option>
+  </select>
+  <input type="date" name="date_from" value="{{ filters.date_from or '' }}" class="border rounded px-2 py-1" />
+  <input type="date" name="date_to" value="{{ filters.date_to or '' }}" class="border rounded px-2 py-1" />
+  <div class="col-span-2 flex justify-end gap-2">
+    <a href="/s/{{ uuid }}/results" class="text-xs text-gray-500 hover:underline self-center">Clear</a>
+    <button type="submit" class="bg-brand text-white text-sm px-3 py-1 rounded font-medium hover:bg-brand-dark">Filter</button>
+  </div>
+</form>
+
+<p class="text-xs text-gray-400 mb-2">{{ total_runs }} run{{ '' if total_runs == 1 else 's' }}</p>
+
+<div id="runs-list" class="space-y-2">
+  {% include "partials/results_rows.html" %}
+</div>
+
+{% endif %}
+{% endblock %}
