@@ -60,7 +60,8 @@
 {% endif %}
 
 <div class="mt-6 border-t pt-4 text-xs text-gray-400 space-y-1">
-  <p>Defaults: {{ session.avg_time_per_dog }}s/dog · {{ session.default_setup_mins }}min setup · {{ session.default_walk_mins }}min walk</p>
+  <p>Time per dog: {% for h in [200, 300, 400, 500, 600] %}{{ h }}mm {{ session|attr('tpd_' ~ h) or session.avg_time_per_dog }}s{% if not loop.last %} · {% endif %}{% endfor %}</p>
+  <p>{{ session.default_setup_mins }}min setup · {{ session.default_walk_mins }}min walk</p>
   <a href="/s/{{ uuid }}/settings" class="text-brand hover:underline">Change defaults</a>
 </div>
 

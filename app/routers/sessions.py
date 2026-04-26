@@ -109,16 +109,35 @@ def settings_page(uuid: str, request: Request, db: DBSession = Depends(get_db)):
     )
 
 
+@router.post("/s/{uuid}/logout")
+def logout(uuid: str, db: DBSession = Depends(get_db)):
+    session = db.query(Session).filter(Session.uuid == uuid).first()
+    if session:
+        from app.queue import get_redis
+        get_redis().delete(f"sync_job:{uuid}")
+        db.delete(session)
+        db.commit()
+    return RedirectResponse(url="/", status_code=303)
+
+
 @router.post("/s/{uuid}/settings")
 def update_settings(
     uuid: str,
-    avg_time_per_dog: int = Form(90),
+    tpd_200: int = Form(90),
+    tpd_300: int = Form(90),
+    tpd_400: int = Form(90),
+    tpd_500: int = Form(90),
+    tpd_600: int = Form(90),
     default_setup_mins: int = Form(10),
     default_walk_mins: int = Form(10),
     db: DBSession = Depends(get_db),
 ):
     session = _get_session(uuid, db)
-    session.avg_time_per_dog = avg_time_per_dog
+    session.tpd_200 = tpd_200
+    session.tpd_300 = tpd_300
+    session.tpd_400 = tpd_400
+    session.tpd_500 = tpd_500
+    session.tpd_600 = tpd_600
     session.default_setup_mins = default_setup_mins
     session.default_walk_mins = default_walk_mins
     db.commit()

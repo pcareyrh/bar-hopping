@@ -23,11 +23,14 @@
   <!-- Nav -->
   <header class="bg-brand text-white shadow-md">
     <div class="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
-      <a href="/" class="font-bold text-lg tracking-tight">🐾 Bar Hopping</a>
+      <a href="{% if uuid is defined and uuid %}/s/{{ uuid }}{% else %}/{% endif %}" class="font-bold text-lg tracking-tight">🐾 Bar Hopping</a>
       {% if uuid is defined and uuid %}
-      <nav class="flex gap-4 text-sm">
+      <nav class="flex gap-4 text-sm items-center">
         <a href="/s/{{ uuid }}/trials" class="hover:underline">Trials</a>
         <a href="/s/{{ uuid }}/settings" class="hover:underline">Settings</a>
+        <form method="POST" action="/s/{{ uuid }}/logout">
+          <button type="submit" class="hover:underline">Log out</button>
+        </form>
       </nav>
       {% endif %}
     </div>

@@ -12,6 +12,9 @@ def _new_uuid():
     return str(uuid.uuid4())
 
 
+HEIGHT_GROUPS = (200, 300, 400, 500, 600)
+
+
 class Session(Base):
     __tablename__ = "sessions"
 
@@ -20,11 +23,23 @@ class Session(Base):
     topdog_email = Column(String, nullable=True)       # Fernet-encrypted
     topdog_password = Column(String, nullable=True)    # Fernet-encrypted
     topdog_synced_at = Column(DateTime, nullable=True)
-    avg_time_per_dog = Column(Integer, default=90)
+    avg_time_per_dog = Column(Integer, default=90)     # legacy fallback
+    tpd_200 = Column(Integer, default=90)
+    tpd_300 = Column(Integer, default=90)
+    tpd_400 = Column(Integer, default=90)
+    tpd_500 = Column(Integer, default=90)
+    tpd_600 = Column(Integer, default=90)
     default_setup_mins = Column(Integer, default=10)
     default_walk_mins = Column(Integer, default=10)
 
     entries = relationship("SessionEntry", back_populates="session", cascade="all, delete-orphan")
+
+    def tpd_for(self, height_group: int | None) -> int:
+        if height_group in HEIGHT_GROUPS:
+            value = getattr(self, f"tpd_{height_group}", None)
+            if value is not None:
+                return value
+        return self.avg_time_per_dog or 90
 
 
 class Trial(Base):

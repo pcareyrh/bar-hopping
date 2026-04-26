@@ -11,19 +11,24 @@
   <form method="POST" action="/s/{{ uuid }}/settings" class="space-y-5">
 
     <div>
-      <label class="block text-sm font-medium mb-1" for="avg_time_per_dog">
-        Average time per dog (seconds)
-      </label>
-      <input
-        id="avg_time_per_dog"
-        name="avg_time_per_dog"
-        type="number"
-        min="30"
-        max="300"
-        value="{{ session.avg_time_per_dog }}"
-        class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand"
-      />
-      <p class="text-xs text-gray-400 mt-1">Typical range: 60–120 s</p>
+      <p class="block text-sm font-medium mb-1">Average time per dog (seconds)</p>
+      <p class="text-xs text-gray-400 mb-2">Set per jump height. Typical range: 30–120 s.</p>
+      <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {% for h in [200, 300, 400, 500, 600] %}
+        <div>
+          <label class="block text-xs font-medium text-gray-600 mb-1" for="tpd_{{ h }}">{{ h }}mm</label>
+          <input
+            id="tpd_{{ h }}"
+            name="tpd_{{ h }}"
+            type="number"
+            min="15"
+            max="300"
+            value="{{ session|attr('tpd_' ~ h) or session.avg_time_per_dog }}"
+            class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand"
+          />
+        </div>
+        {% endfor %}
+      </div>
     </div>
 
     <div>

@@ -36,7 +36,7 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
             base_start=DEFAULT_TRIAL_START,
             setup_mins=session.default_setup_mins,
             walk_mins=session.default_walk_mins,
-            avg_tpd=session.avg_time_per_dog,
+            tpd_for_height=session.tpd_for,
         )
 
     predictions = _build_predictions(session, trial, db, day_blocks=day_blocks)
@@ -128,7 +128,7 @@ def _compute_catalogue_blocks(
     base_start: time,
     setup_mins: int,
     walk_mins: int,
-    avg_tpd: int,
+    tpd_for_height,
 ) -> list[dict]:
     """Estimate when each (event_name, height_group) block runs based purely on
     the catalogue. We assume two rings (agility + jumping) running in parallel
@@ -195,7 +195,7 @@ def _compute_catalogue_blocks(
                 b["setup_mins"] = 0
                 b["walk_mins"] = 0
             b["first_run"] = cursor
-            cursor += timedelta(seconds=b["count"] * avg_tpd)
+            cursor += timedelta(seconds=b["count"] * tpd_for_height(b["height_group"]))
             b["last_run"] = cursor
             out.append(b)
 
@@ -229,7 +229,7 @@ def _build_predictions(
                 base_start=DEFAULT_TRIAL_START,
                 setup_mins=session.default_setup_mins,
                 walk_mins=session.default_walk_mins,
-                avg_tpd=session.avg_time_per_dog,
+                tpd_for_height=session.tpd_for,
             )
         )
     block_starts: dict[tuple[str, int], datetime] = {
@@ -266,13 +266,14 @@ def _build_predictions(
             ClassSchedule.class_name == ce.event_name,
         ).first()
 
+        height_tpd = session.tpd_for(ce.height_group)
         if cs and cs.scheduled_start:
             pred = predict_run(
                 scheduled_start=cs.scheduled_start,
                 ring_setup_mins=cs.ring_setup_mins or session.default_setup_mins,
                 walk_mins=cs.walk_mins or session.default_walk_mins,
                 run_position=ce.run_position,
-                avg_time_per_dog=session.avg_time_per_dog,
+                avg_time_per_dog=height_tpd,
                 trial_date=trial.start_date,
                 position_override=entry.position_override,
                 time_per_dog_override=entry.time_per_dog_override,
@@ -283,7 +284,7 @@ def _build_predictions(
             pred = predict_run_from_block(
                 block_first_run=block_starts[(ce.event_name, ce.height_group)],
                 run_position=ce.run_position,
-                avg_time_per_dog=session.avg_time_per_dog,
+                avg_time_per_dog=height_tpd,
                 position_override=entry.position_override,
                 time_per_dog_override=entry.time_per_dog_override,
             )
@@ -307,7 +308,7 @@ def _build_predictions(
             "predicted_start": predicted_start,
             "predicted_start_str": predicted_start_str,
             "effective_position": pred.get("effective_position", ce.run_position),
-            "effective_tpd": pred.get("effective_tpd", session.avg_time_per_dog),
+            "effective_tpd": pred.get("effective_tpd", height_tpd),
             "pending": False,
             "position_override": entry.position_override,
             "time_per_dog_override": entry.time_per_dog_override,
