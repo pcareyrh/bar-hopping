@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
@@ -6,6 +8,7 @@ from sqlalchemy.orm import Session as DBSession
 from app.database import get_db
 from app.models import Session, Trial, CatalogueEntry, ClassSchedule, SessionEntry
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
@@ -73,9 +76,10 @@ def refresh_trial(uuid: str, trial_id: int, db: DBSession = Depends(get_db)):
 
     try:
         from app.queue import get_queue
-        get_queue().enqueue("app.worker.refresh_trial_docs_job", trial.id, uuid, job_timeout=300)
+        job = get_queue().enqueue("app.worker.refresh_trial_docs_job", trial.id, uuid, job_timeout=300)
+        log.info("Trial refresh enqueued: trial_id=%s session=%s job=%s", trial.id, uuid, job.id)
     except Exception:
-        pass
+        log.warning("Failed to enqueue trial refresh: trial_id=%s session=%s", trial.id, uuid, exc_info=True)
 
     return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}?refreshing=1", status_code=303)
 

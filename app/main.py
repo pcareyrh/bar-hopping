@@ -1,3 +1,6 @@
+import logging
+import os
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -6,6 +9,12 @@ from sqlalchemy import inspect, text
 
 from app.database import engine, Base, SessionLocal
 from app.models import HEIGHT_GROUPS, Dog, SessionEntry, normalise_name, normalise_handler
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "info").upper(),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger(__name__)
 from app.routers import sessions, trials, schedule, results
 
 Base.metadata.create_all(bind=engine)
@@ -82,8 +91,11 @@ def _seed_dogs_from_session_entries() -> None:
         db.close()
 
 
+log.info("Running migrations")
 _migrate()
+log.info("Seeding dogs from session entries")
 _seed_dogs_from_session_entries()
+log.info("Startup complete")
 
 app = FastAPI(title="Bar Hopping — Dog Agility Planner")
 

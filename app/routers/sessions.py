@@ -1,4 +1,5 @@
 import html as html_lib
+import logging
 
 from fastapi import APIRouter, Depends, Form, Request, HTTPException
 from fastapi.responses import RedirectResponse, HTMLResponse
@@ -9,6 +10,7 @@ from app.database import get_db
 from app.models import Session
 from app import crypto
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
@@ -18,6 +20,7 @@ def create_session(db: DBSession = Depends(get_db)):
     session = Session()
     db.add(session)
     db.commit()
+    log.info("Session created: %s", session.uuid)
     return RedirectResponse(url=f"/s/{session.uuid}/setup", status_code=303)
 
 
@@ -52,6 +55,7 @@ def sync_entries(
     from app.queue import get_queue, get_redis
     job = get_queue().enqueue("app.worker.sync_session_job", session.uuid, job_timeout=300)
     get_redis().setex(f"sync_job:{uuid}", 3600, job.id)
+    log.info("Sync enqueued for session %s, job %s", uuid, job.id)
 
     return RedirectResponse(url=f"/s/{uuid}/syncing", status_code=303)
 
@@ -84,6 +88,7 @@ def sync_status(uuid: str, request: Request):
         return HTMLResponse(content="", headers={"HX-Redirect": f"/s/{uuid}/trials"})
 
     if job.is_failed:
+        log.warning("Sync job failed for session %s: %s", uuid, job.exc_info)
         error = html_lib.escape(str(job.exc_info or "Unknown error")[:300])
         return HTMLResponse(
             f'<div id="sync-status">'
@@ -117,6 +122,7 @@ def logout(uuid: str, db: DBSession = Depends(get_db)):
         get_redis().delete(f"sync_job:{uuid}")
         db.delete(session)
         db.commit()
+        log.info("Session deleted: %s", uuid)
     return RedirectResponse(url="/", status_code=303)
 
 

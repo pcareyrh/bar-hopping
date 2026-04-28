@@ -3,6 +3,7 @@
 Renders historical run rows and per-dog stats from `trial_results` joined
 through `dogs` ↔ `session_entries`. No scraper imports.
 """
+import logging
 import os
 from datetime import datetime, date, timedelta
 
@@ -18,6 +19,7 @@ from app.models import (
     normalise_name, normalise_handler,
 )
 
+log = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
 
@@ -404,7 +406,9 @@ def admin_backfill(
     try:
         from app.queue import get_queue
         job = get_queue().enqueue("app.worker.backfill_results_job", years, job_timeout=1800)
+        log.info("Results backfill enqueued: years=%s job=%s", years, job.id)
     except Exception as e:
+        log.error("Failed to enqueue results backfill: %s", e)
         raise HTTPException(status_code=500, detail=f"Enqueue failed: {e}")
     return JSONResponse({"job_id": job.id, "status": "enqueued", "years": years})
 
