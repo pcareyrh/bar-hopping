@@ -1,0 +1,4 @@
+services:
+  web:
+    image: ghcr.io/pcareyrh/bar-hopping-web:main
+    pull_policy: always

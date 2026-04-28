@@ -31,6 +31,7 @@ services:
       DATABASE_URL: postgresql+psycopg2://barhopping:${DB_PASSWORD}@db/barhopping
       REDIS_URL: redis://redis:6379
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       db:
         condition: service_healthy
