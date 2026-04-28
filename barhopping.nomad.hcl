@@ -1,11 +1,16 @@
 variable "encryption_key" {
   type = string
-  default = "testencryption123"
+  default = "eWVv7d1obaYl9oY2XQWbSAS923jw-zEqWQlb219Vc4w="
 }
 
 variable "db_password" {
   type = string
   default = "postgres"
+}
+
+variable "results_admin_token" {
+  type = string
+  default = "postgrestoken"
 }
 
 variable "database_url" {
@@ -146,6 +151,27 @@ job "bar-hopping" {
       }
     }
 
+    task "wait-for-db" {
+      # Polls Consul's HTTP API directly (no DNS needed) until the db service
+      # is registered and passing its health check. Blocks web + worker from
+      # starting until Postgres is ready.
+      lifecycle {
+        hook    = "prestart"
+        sidecar = false
+      }
+      driver = "docker"
+      config {
+        image        = "alpine"
+        network_mode = "host"
+        command      = "sh"
+        args         = ["-c", "until wget -qO- 'http://127.0.0.1:8500/v1/health/service/bar-hopping-db?passing=true' 2>/dev/null | grep -q ServiceID; do echo 'waiting for bar-hopping-db...'; sleep 2; done"]
+      }
+      resources {
+        cpu    = 50
+        memory = 64
+      }
+    }
+
     task "web" {
       driver = "docker"
 
@@ -156,9 +182,27 @@ job "bar-hopping" {
       }
 
       env {
-        DATABASE_URL   = var.database_url
-        REDIS_URL      = var.redis_url
-        ENCRYPTION_KEY = var.encryption_key
+        ENCRYPTION_KEY      = var.encryption_key
+        DB_PASSWORD         = var.db_password
+        RESULTS_ADMIN_TOKEN = var.results_admin_token
+        LOG_LEVEL           = "debug"
+      }
+
+      # Consul template runs in the Nomad client process (not in the container)
+      # so it resolves bar-hopping-db via the local Consul agent directly —
+      # no .consul DNS required inside the container.
+      template {
+        data = <<EOH
+{{ range service "bar-hopping-db" -}}
+DATABASE_URL="postgresql+psycopg2://barhopping:{{ env "DB_PASSWORD" }}@{{ .Address }}:{{ .Port }}/barhopping"
+{{ end -}}
+{{ range service "bar-hopping-redis" -}}
+REDIS_URL="redis://{{ .Address }}:{{ .Port }}"
+{{ end -}}
+EOH
+        destination = "secrets/app.env"
+        env         = true
+        change_mode = "restart"
       }
 
       resources {
@@ -176,14 +220,27 @@ job "bar-hopping" {
       }
 
       env {
-        DATABASE_URL   = var.database_url
-        REDIS_URL      = var.redis_url
         ENCRYPTION_KEY = var.encryption_key
+        DB_PASSWORD    = var.db_password
+      }
+
+      template {
+        data = <<EOH
+{{ range service "bar-hopping-db" -}}
+DATABASE_URL="postgresql+psycopg2://barhopping:{{ env "DB_PASSWORD" }}@{{ .Address }}:{{ .Port }}/barhopping"
+{{ end -}}
+{{ range service "bar-hopping-redis" -}}
+REDIS_URL="redis://{{ .Address }}:{{ .Port }}"
+{{ end -}}
+EOH
+        destination = "secrets/app.env"
+        env         = true
+        change_mode = "restart"
       }
 
       resources {
-        cpu    = 2048
-        memory = 2048
+        cpu    = 1024
+        memory = 1024
       }
     }
   }

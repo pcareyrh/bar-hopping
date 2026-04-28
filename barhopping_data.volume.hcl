@@ -4,6 +4,7 @@ type      = "csi"
 plugin_id = "nfs"
 
 capability {
-  access_mode     = "multi-node-multi-writer"
+  access_mode     = "single-node-writer"
   attachment_mode = "file-system"
 }
+
