@@ -413,6 +413,24 @@ def admin_backfill(
     return JSONResponse({"job_id": job.id, "status": "enqueued", "years": years})
 
 
+@router.post("/admin/results/rescrape")
+def admin_rescrape(
+    token: str | None = Form(None),
+    x_admin_token: str | None = Header(None, alias="X-Admin-Token"),
+    db: DBSession = Depends(get_db),
+):
+    """Reset all 'ok' trials to NULL so backfill re-scrapes them."""
+    _check_admin(token or x_admin_token)
+    n = (
+        db.query(Trial)
+        .filter(Trial.discipline == 1, Trial.results_status == "ok")
+        .update({"results_status": None, "results_synced_at": None}, synchronize_session=False)
+    )
+    db.commit()
+    log.info("admin_rescrape: reset %d trials to NULL", n)
+    return JSONResponse({"reset": n, "message": "Trials reset. POST /admin/results/backfill to re-scrape."})
+
+
 @router.get("/admin/results/status")
 def admin_status(
     token: str | None = None,

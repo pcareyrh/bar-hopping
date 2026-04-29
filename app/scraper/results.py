@@ -35,7 +35,7 @@ _HEIGHT_HEADER_RE = re.compile(
     r"^(?P<label>.+?)\s*-\s*(?P<height>200|300|400|500|600)\b",
     re.I,
 )
-_SCT_RE = re.compile(r"Standard Course Time:\s*([\d.]+)", re.I)
+_SCT_RE = re.compile(r"(?:Standard Course Time|SCT):\s*([\d.]+)", re.I)
 _LENGTH_RE = re.compile(r"Course Length:\s*(\d+)", re.I)
 _JUDGE_RE = re.compile(r"Judge:\s*(.+?)(?:\.|$)", re.I)
 
@@ -290,6 +290,10 @@ def _parse_run_row(tds) -> dict | None:
 
     if time_seconds is None and total_faults is None:
         status = "ABS"
+
+    # TopDog leaves the faults cell blank for clean (0-fault) runs. Infer 0.
+    if status is None and time_seconds is not None and total_faults is None:
+        total_faults = 0.0
 
     return {
         "dog_name_raw": dog_name_raw,
