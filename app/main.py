@@ -91,11 +91,15 @@ def _seed_dogs_from_session_entries() -> None:
         db.close()
 
 
-log.info("Running migrations")
-_migrate()
-log.info("Seeding dogs from session entries")
-_seed_dogs_from_session_entries()
-log.info("Startup complete")
+try:
+    log.info("Running migrations")
+    _migrate()
+    log.info("Seeding dogs from session entries")
+    _seed_dogs_from_session_entries()
+    log.info("Startup complete")
+except Exception:
+    log.exception("Startup failed")
+    raise
 
 app = FastAPI(title="Bar Hopping — Dog Agility Planner")
 
