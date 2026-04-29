@@ -29,7 +29,7 @@ async def _login(page, email: str, password: str) -> None:
 async def get_authed_cookies(email: str, password: str) -> dict[str, str]:
     """Log in and return the session cookies as a dict suitable for httpx."""
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        browser = await p.chromium.launch(args=["--no-sandbox"])
         context = await browser.new_context()
         page = await context.new_page()
         try:
@@ -57,7 +57,7 @@ async def sync_user_entries(
     upcoming only, but we also filter by date as a safeguard).
     """
     async with async_playwright() as p:
-        browser = await p.chromium.launch()
+        browser = await p.chromium.launch(args=["--no-sandbox"])
         context = await browser.new_context()
         page = await context.new_page()
 
