@@ -21,7 +21,7 @@ Base.metadata.create_all(bind=engine)
 
 
 def _add_column_if_missing(conn, table: str, column: str, ddl: str, backfill_sql: str | None = None) -> None:
-    existing = {c["name"] for c in inspect(engine).get_columns(table)}
+    existing = {c["name"] for c in inspect(conn).get_columns(table)}
     if column in existing:
         return
     conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}"))
