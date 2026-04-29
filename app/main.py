@@ -46,6 +46,13 @@ def _migrate() -> None:
         _add_column_if_missing(conn, "trials", "results_synced_at", "TIMESTAMP")
         _add_column_if_missing(conn, "trials", "results_status", "VARCHAR")
 
+        # Backfill total_faults=0 for completed timed runs where faults were
+        # stored as NULL (TopDog renders blank, not "0", for clean runs).
+        conn.execute(text(
+            "UPDATE trial_results SET total_faults = 0"
+            " WHERE status IS NULL AND time_seconds IS NOT NULL AND total_faults IS NULL"
+        ))
+
         # Indexes on existing tables (create_all only handles new tables).
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_trials_results_status ON trials(results_status)"
