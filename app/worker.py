@@ -160,13 +160,20 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
             if not trial:
                 return
 
+            log.info("refresh_trial_docs_job: trial %s (id=%d) catalogue_doc_url=%s",
+                     trial.external_id, trial_id, trial.catalogue_doc_url)
+
             # Re-scrape the trial detail page to pick up catalogue/schedule URLs
             # that may have appeared since the trial was first added (e.g. entries
             # closed after initial sync, or format changed to HTML entries page).
             try:
+                log.info("refresh_trial_docs_job: fetching trial detail for %s", trial.external_id)
                 detail = await fetch_trial_detail(trial.external_id)
+                log.info("refresh_trial_docs_job: detail catalogue_doc_url=%s schedule_doc_url=%s",
+                         detail.get("catalogue_doc_url"), detail.get("schedule_doc_url"))
                 if detail.get("catalogue_doc_url") and not trial.catalogue_doc_url:
                     trial.catalogue_doc_url = detail["catalogue_doc_url"]
+                    log.info("refresh_trial_docs_job: updated catalogue_doc_url to %s", trial.catalogue_doc_url)
                 if detail.get("schedule_doc_url") and not trial.schedule_doc_url:
                     trial.schedule_doc_url = detail["schedule_doc_url"]
                 db.commit()
@@ -176,9 +183,12 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
             if trial.catalogue_doc_url:
                 try:
                     if trial.catalogue_doc_url.rstrip("/").endswith("/entries"):
+                        log.info("refresh_trial_docs_job: fetching HTML entries from %s", trial.catalogue_doc_url)
                         entries = await download_and_parse_catalogue_entries(trial.catalogue_doc_url)
                     else:
+                        log.info("refresh_trial_docs_job: fetching xlsx catalogue from %s", trial.catalogue_doc_url)
                         entries = await download_and_parse_catalogue(trial.catalogue_doc_url)
+                    log.info("refresh_trial_docs_job: %d catalogue entries parsed", len(entries))
                 except Exception as e:
                     log.warning("refresh_trial_docs_job: catalogue download/parse failed: %s", e)
                     entries = []
