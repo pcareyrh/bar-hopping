@@ -7,6 +7,7 @@ trial id.
 """
 import re
 from datetime import datetime
+import httpx
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
@@ -19,6 +20,19 @@ MONTH_MAP = {
     "Sep": "September", "Sept": "September", "Oct": "October",
     "Nov": "November", "Dec": "December",
 }
+
+
+async def fetch_trial_detail(external_id: str) -> dict:
+    """Fetch and parse a trial detail page using httpx (no browser required).
+
+    Used by refresh_trial_docs_job to update catalogue/schedule URLs for
+    existing trials without spinning up Playwright.
+    """
+    url = f"{BASE_URL}/trials/{external_id}"
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+    return _parse_trial_detail(external_id, resp.text)
 
 
 async def scrape_trial_detail(external_id: str) -> dict:
@@ -84,6 +98,11 @@ def _parse_trial_detail(external_id: str, html: str) -> dict:
             result["schedule_doc_url"] = full
         elif href.endswith("/catalogue/get"):
             result["catalogue_doc_url"] = full
+
+    # If the trial is closed but has no xlsx catalogue, the entries summary
+    # page serves as the catalogue source in HTML format.
+    if "catalogue_doc_url" not in result and soup.find(attrs={"title": "This trial is closed"}):
+        result["catalogue_doc_url"] = f"{BASE_URL}/trials/{external_id}/entries"
 
     loc = soup.select_one("#location")
     if loc:

@@ -149,9 +149,10 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
     must be supplied to pull decrypted TopDog credentials and obtain a
     logged-in cookie jar."""
     async def _run():
-        from app.scraper.catalogue import download_and_parse_catalogue
+        from app.scraper.catalogue import download_and_parse_catalogue, download_and_parse_catalogue_entries
         from app.scraper.schedule import download_and_parse_schedule
         from app.scraper.auth import get_authed_cookies
+        from app.scraper.trials import fetch_trial_detail
 
         db = SessionLocal()
         try:
@@ -159,17 +160,38 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
             if not trial:
                 return
 
-            if trial.catalogue_doc_url:
-                entries = await download_and_parse_catalogue(trial.catalogue_doc_url)
-                # Unlink session entries so we can replace catalogue rows without FK violations.
-                db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
-                    {"catalogue_entry_id": None}, synchronize_session=False
-                )
-                db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
-                for e in entries:
-                    db.add(CatalogueEntry(trial_id=trial_id, **e))
+            # Re-scrape the trial detail page to pick up catalogue/schedule URLs
+            # that may have appeared since the trial was first added (e.g. entries
+            # closed after initial sync, or format changed to HTML entries page).
+            try:
+                detail = await fetch_trial_detail(trial.external_id)
+                if detail.get("catalogue_doc_url") and not trial.catalogue_doc_url:
+                    trial.catalogue_doc_url = detail["catalogue_doc_url"]
+                if detail.get("schedule_doc_url") and not trial.schedule_doc_url:
+                    trial.schedule_doc_url = detail["schedule_doc_url"]
                 db.commit()
-                _resolve_catalogue_links(trial, db)
+            except Exception as e:
+                log.warning("refresh_trial_docs_job: trial detail re-scrape failed: %s", e)
+
+            if trial.catalogue_doc_url:
+                try:
+                    if trial.catalogue_doc_url.rstrip("/").endswith("/entries"):
+                        entries = await download_and_parse_catalogue_entries(trial.catalogue_doc_url)
+                    else:
+                        entries = await download_and_parse_catalogue(trial.catalogue_doc_url)
+                except Exception as e:
+                    log.warning("refresh_trial_docs_job: catalogue download/parse failed: %s", e)
+                    entries = []
+                if entries:
+                    # Unlink session entries so we can replace catalogue rows without FK violations.
+                    db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
+                        {"catalogue_entry_id": None}, synchronize_session=False
+                    )
+                    db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
+                    for e in entries:
+                        db.add(CatalogueEntry(trial_id=trial_id, **e))
+                    db.commit()
+                    _resolve_catalogue_links(trial, db)
 
             if trial.schedule_doc_url:
                 cookies: dict[str, str] | None = None
@@ -206,6 +228,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
 def _resolve_catalogue_links(trial: Trial, db) -> None:
     session_entries = db.query(SessionEntry).filter(SessionEntry.trial_id == trial.id).all()
     for se in session_entries:
+        # Primary: exact cat_number + event_name match (xlsx catalogue format)
         if se.cat_number:
             ce = (
                 db.query(CatalogueEntry)
@@ -213,6 +236,24 @@ def _resolve_catalogue_links(trial: Trial, db) -> None:
                     CatalogueEntry.trial_id == trial.id,
                     CatalogueEntry.cat_number == se.cat_number,
                     CatalogueEntry.event_name == se.event_name,
+                )
+                .first()
+            )
+            if ce:
+                se.catalogue_entry_id = ce.id
+                continue
+
+        # Fallback: match by event_name + height_group for HTML entries-format
+        # catalogue (sentinel cat_number starts with '~'). Gives height_group_total
+        # without individual run order.
+        if se.event_name and se.height_group:
+            ce = (
+                db.query(CatalogueEntry)
+                .filter(
+                    CatalogueEntry.trial_id == trial.id,
+                    CatalogueEntry.event_name == se.event_name,
+                    CatalogueEntry.height_group == se.height_group,
+                    CatalogueEntry.cat_number.like("~%"),
                 )
                 .first()
             )

@@ -62,9 +62,13 @@
         {% endif %}
         {% if entry.catalogue_entry %}
         <p class="text-xs text-gray-500 mt-1">
+          {% if entry.catalogue_entry.run_position %}
           Run {{ entry.catalogue_entry.run_position }} of {{ entry.catalogue_entry.height_group_total }}
           {% if entry.catalogue_entry.nfc %}
           <span class="text-amber-600 font-medium">(NFC)</span>
+          {% endif %}
+          {% else %}
+          {{ entry.catalogue_entry.height_group_total }} dogs in your group
           {% endif %}
         </p>
         {% elif has_catalogue %}
