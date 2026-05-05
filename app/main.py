@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 
+from app._version import VERSION
 from app.database import engine, Base, SessionLocal
 from app.models import HEIGHT_GROUPS, Dog, SessionEntry, normalise_name, normalise_handler
 
@@ -99,6 +100,7 @@ def _seed_dogs_from_session_entries() -> None:
 
 
 try:
+    log.info("Bar Hopping version %s", VERSION)
     log.info("Running migrations")
     _migrate()
     log.info("Seeding dogs from session entries")
@@ -111,6 +113,7 @@ except Exception:
 app = FastAPI(title="Bar Hopping — Dog Agility Planner")
 
 templates = Jinja2Templates(directory="app/templates")
+templates.env.globals["APP_VERSION"] = VERSION
 
 app.include_router(sessions.router)
 app.include_router(trials.router)

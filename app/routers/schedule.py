@@ -236,6 +236,10 @@ def _build_predictions(
         (b["event_name"], b["height_group"]): b["first_run"] for b in day_blocks
     }
 
+    all_class_schedules = (
+        db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial.id).all()
+    )
+
     predictions = []
     for entry in entries:
         ce: CatalogueEntry | None = entry.catalogue_entry
@@ -261,10 +265,7 @@ def _build_predictions(
             })
             continue
 
-        cs = db.query(ClassSchedule).filter(
-            ClassSchedule.trial_id == trial.id,
-            ClassSchedule.class_name == ce.event_name,
-        ).first()
+        cs = _match_class_schedule(all_class_schedules, ce.event_name)
 
         height_tpd = session.tpd_for(ce.height_group)
         if cs and cs.scheduled_start:
@@ -317,6 +318,25 @@ def _build_predictions(
 
     predictions.sort(key=lambda p: (p["predicted_start"] is None, p["predicted_start"] or ""))
     return predictions
+
+
+def _match_class_schedule(
+    schedules: list[ClassSchedule], event_name: str
+) -> ClassSchedule | None:
+    """Find the best matching ClassSchedule for a catalogue event name.
+
+    Tries exact match first, then case-insensitive substring containment
+    to handle variations like 'Agility' vs 'Masters Agility'.
+    """
+    for cs in schedules:
+        if cs.class_name == event_name:
+            return cs
+    en = event_name.lower()
+    for cs in schedules:
+        cn = cs.class_name.lower()
+        if cn in en or en in cn:
+            return cs
+    return None
 
 
 def _get_session(uuid: str, db: DBSession) -> Session:

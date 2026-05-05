@@ -64,13 +64,13 @@ def _parse_schedule_text(text: str) -> list[dict]:
         time_m = re.match(
             r"(\d{1,2}:\d{2}\s*(?:AM|PM)?)\s+(.+)", line, re.I
         )
-        if time_m and current_ring:
+        if time_m:
             time_str = time_m.group(1).strip()
             class_name = time_m.group(2).strip()
             parsed_time = _parse_time(time_str)
             if parsed_time and _looks_like_class(class_name):
                 results.append({
-                    "ring_number": current_ring,
+                    "ring_number": current_ring or "1",
                     "class_name": class_name,
                     "scheduled_start": parsed_time,
                 })
