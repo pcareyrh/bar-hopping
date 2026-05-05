@@ -124,6 +124,7 @@ except Exception:
     raise
 
 app = FastAPI(title="Bar Hopping — Dog Agility Planner")
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 
 templates = Jinja2Templates(directory="app/templates")
 templates.env.globals["APP_VERSION"] = VERSION

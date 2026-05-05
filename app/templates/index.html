@@ -2,39 +2,47 @@
 {% block title %}Home{% endblock %}
 
 {% block content %}
-<div class="flex flex-col items-center justify-center min-h-[60vh] text-center gap-8">
+<div class="flex flex-col items-center justify-center min-h-[60vh] text-center gap-8 py-4">
 
-  <div>
-    <h1 class="text-3xl font-bold mb-2">Bar Hopping</h1>
-    <p class="text-gray-500 max-w-sm">
-      Personalised time predictions for your dog agility runs at TopDog trials.
-    </p>
+  <!-- Hero logo + branding -->
+  <div class="flex flex-col items-center gap-4">
+    <div class="bg-white rounded-3xl p-4 shadow-lg border border-slate-100 overflow-hidden">
+      <img src="/static/logo.png" alt="Border collie jumping" class="h-40 w-auto object-contain" />
+    </div>
+    <div>
+      <h1 class="text-4xl font-bold text-surface tracking-tight">Bar Hopping</h1>
+      <p class="text-brand font-semibold text-base mt-1.5 italic">Hopping bars and weaving poles</p>
+    </div>
   </div>
+
+  <p class="text-gray-500 max-w-xs text-sm leading-relaxed">
+    Personalised run-time predictions for your dog agility entries at TopDog trials.
+  </p>
 
   <form method="POST" action="/sessions">
     <button
       type="submit"
-      class="bg-brand text-white px-8 py-3 rounded-xl text-lg font-semibold shadow hover:bg-brand-dark transition"
+      class="bg-brand text-white px-10 py-4 rounded-2xl text-lg font-bold shadow-md hover:bg-brand-dark transition active:scale-95"
     >
       Start Planning
     </button>
   </form>
 
   <div class="w-full max-w-sm">
-    <p class="text-sm text-gray-400 mb-2">Already have a plan? Paste your link:</p>
+    <p class="text-sm text-gray-400 mb-2">Already have a plan?</p>
     <form
       class="flex gap-2"
-      onsubmit="event.preventDefault(); window.location = document.getElementById('resume-link').value;"
+      onsubmit="event.preventDefault(); var v = document.getElementById('resume-link').value.trim(); if(v) window.location = v;"
     >
       <input
         id="resume-link"
         type="text"
-        placeholder="https://…/s/your-uuid"
-        class="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
+        placeholder="Paste your link here"
+        class="flex-1 border border-gray-200 rounded-xl px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand bg-white"
       />
       <button
         type="submit"
-        class="bg-gray-700 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-gray-800 transition"
+        class="bg-surface text-white px-5 py-3 rounded-xl text-sm font-semibold hover:bg-surface-light transition"
       >
         Go
       </button>

@@ -2,7 +2,7 @@
 <html lang="en" class="h-full">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>{% block title %}Bar Hopping{% endblock %} — Agility Planner</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
@@ -11,40 +11,81 @@
       theme: {
         extend: {
           colors: {
-            brand: { DEFAULT: '#2563eb', dark: '#1d4ed8' }
+            brand: { DEFAULT: '#16a34a', dark: '#15803d', light: '#dcfce7' },
+            surface: { DEFAULT: '#1e293b', light: '#334155' }
           }
         }
       }
     }
   </script>
+  <style>
+    summary::-webkit-details-marker { display: none; }
+    summary { list-style: none; }
+    details[open] .chevron { transform: rotate(180deg); }
+    .chevron { transition: transform 0.15s ease; display: inline-block; }
+    .nav-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+    .content-pb { padding-bottom: calc(5.5rem + env(safe-area-inset-bottom, 0px)); }
+  </style>
 </head>
-<body class="min-h-full bg-gray-50 text-gray-900 font-sans">
+<body class="min-h-full bg-slate-50 text-gray-900 font-sans">
 
-  <!-- Nav -->
-  <header class="bg-brand text-white shadow-md">
-    <div class="max-w-2xl mx-auto px-4 py-3 flex items-center justify-between">
-      <a href="{% if uuid is defined and uuid %}/s/{{ uuid }}{% else %}/{% endif %}" class="font-bold text-lg tracking-tight">🐾 Bar Hopping</a>
-      {% if uuid is defined and uuid %}
-      <nav class="flex gap-4 text-sm items-center">
-        <a href="/s/{{ uuid }}/trials" class="hover:underline">Trials</a>
-        <a href="/s/{{ uuid }}/results" class="hover:underline">Past Results</a>
-        <a href="/s/{{ uuid }}/settings" class="hover:underline">Settings</a>
-        <form method="POST" action="/s/{{ uuid }}/logout">
-          <button type="submit" class="hover:underline">Log out</button>
-        </form>
-      </nav>
-      {% endif %}
+  <header class="bg-surface text-white shadow-lg sticky top-0 z-20">
+    <div class="max-w-lg mx-auto px-4 py-2.5 flex items-center">
+      <a href="{% if uuid is defined and uuid %}/s/{{ uuid }}{% else %}/{% endif %}" class="flex items-center gap-3">
+        <div class="bg-white rounded-xl p-1 shadow-sm shrink-0 overflow-hidden">
+          <img src="/static/logo.png" alt="Border collie jumping" class="h-9 w-auto object-contain" />
+        </div>
+        <div>
+          <div class="font-bold text-base leading-tight tracking-tight">Bar Hopping</div>
+          <div class="text-xs text-slate-400 leading-none mt-0.5">Agility Planner</div>
+        </div>
+      </a>
     </div>
   </header>
 
-  <main class="max-w-2xl mx-auto px-4 py-6">
+  <main class="max-w-lg mx-auto px-4 py-5 {% if uuid is defined and uuid %}content-pb{% endif %}">
     {% block content %}{% endblock %}
   </main>
 
+  {% if uuid is defined and uuid %}
+  {% set path = request.url.path %}
+  {% set is_trials = '/trials' in path or '/schedule' in path %}
+  {% set is_results = '/results' in path %}
+  {% set is_settings = '/settings' in path %}
+  <nav class="fixed bottom-0 left-0 right-0 bg-surface border-t border-slate-700 flex z-20 nav-safe">
+    <a href="/s/{{ uuid }}/trials"
+       class="flex-1 flex flex-col items-center justify-center py-3 gap-0.5 transition-colors
+              {% if is_trials %}text-brand{% else %}text-slate-400{% endif %}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-5 h-5">
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M6.75 3v2.25M17.25 3v2.25M3 18.75V7.5a2.25 2.25 0 012.25-2.25h13.5A2.25 2.25 0 0121 7.5v11.25m-18 0A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75m-18 0v-7.5A2.25 2.25 0 015.25 9h13.5A2.25 2.25 0 0121 11.25v7.5"/>
+      </svg>
+      <span class="text-xs font-medium">Trials</span>
+    </a>
+    <a href="/s/{{ uuid }}/results"
+       class="flex-1 flex flex-col items-center justify-center py-3 gap-0.5 transition-colors
+              {% if is_results %}text-brand{% else %}text-slate-400{% endif %}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-5 h-5">
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M16.5 18.75h-9m9 0a3 3 0 013 3h-15a3 3 0 013-3m9 0v-3.375c0-.621-.503-1.125-1.125-1.125h-.871M7.5 18.75v-3.375c0-.621.504-1.125 1.125-1.125h.872m5.007 0H9.497m5.007 0a7.454 7.454 0 01-.982-3.172M9.497 14.25a7.454 7.454 0 00.981-3.172M5.25 4.236c-.982.143-1.954.317-2.916.52A6.003 6.003 0 007.73 9.728M5.25 4.236V4.5c0 2.108.966 3.99 2.48 5.228M5.25 4.236V2.721C7.456 2.41 9.71 2.25 12 2.25c2.291 0 4.545.16 6.75.47v1.516M7.73 9.728a6.726 6.726 0 002.748 1.35m8.272-6.842V4.5c0 2.108-.966 3.99-2.48 5.228m2.48-5.492a46.32 46.32 0 012.916.52 6.003 6.003 0 01-5.395 4.972m0 0a6.726 6.726 0 01-2.749 1.35m0 0a6.772 6.772 0 01-3.044 0"/>
+      </svg>
+      <span class="text-xs font-medium">Results</span>
+    </a>
+    <a href="/s/{{ uuid }}/settings"
+       class="flex-1 flex flex-col items-center justify-center py-3 gap-0.5 transition-colors
+              {% if is_settings %}text-brand{% else %}text-slate-400{% endif %}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-5 h-5">
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M10.5 6h9.75M10.5 6a1.5 1.5 0 11-3 0m3 0a1.5 1.5 0 10-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 01-3 0m3 0a1.5 1.5 0 00-3 0m-9.75 0h9.75"/>
+      </svg>
+      <span class="text-xs font-medium">Settings</span>
+    </a>
+  </nav>
+  {% else %}
   <footer class="text-center text-xs text-gray-400 py-6">
-    Bar Hopping — not affiliated with topdogevents.com.au
-    <span class="mx-1">·</span>v{{ APP_VERSION }}
+    Bar Hopping — not affiliated with topdogevents.com.au · v{{ APP_VERSION }}
   </footer>
+  {% endif %}
 
 </body>
 </html>
