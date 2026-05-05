@@ -201,10 +201,14 @@ def _compute_catalogue_blocks(
             last_event: str | None = None
             for b in blocks:
                 if b["event_name"] != last_event:
-                    b["setup_start"] = cursor
                     b["setup_mins"] = setup_mins
                     b["walk_mins"] = walk_mins
-                    cursor += timedelta(minutes=setup_mins + walk_mins)
+                    if last_event is None:
+                        # First event of the day: setup/walk happen before base_start
+                        b["setup_start"] = cursor - timedelta(minutes=setup_mins + walk_mins)
+                    else:
+                        b["setup_start"] = cursor
+                        cursor += timedelta(minutes=setup_mins + walk_mins)
                     last_event = b["event_name"]
                 else:
                     b["setup_start"] = None
