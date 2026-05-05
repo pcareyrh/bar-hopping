@@ -11,22 +11,36 @@
   <form method="POST" action="/s/{{ uuid }}/settings" class="space-y-5">
 
     <div>
-      <p class="block text-sm font-medium mb-1">Average time per dog (seconds)</p>
-      <p class="text-xs text-gray-400 mb-2">Set per jump height. Typical range: 30–120 s.</p>
-      <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <p class="block text-sm font-medium mb-1">Time per dog (seconds)</p>
+      <p class="text-xs text-gray-400 mb-2">Set per event type and jump height. Typical range: 30–120 s.</p>
+      <div class="grid grid-cols-6 gap-2 items-center">
+        <div></div>
         {% for h in [200, 300, 400, 500, 600] %}
-        <div>
-          <label class="block text-xs font-medium text-gray-600 mb-1" for="tpd_{{ h }}">{{ h }}mm</label>
-          <input
-            id="tpd_{{ h }}"
-            name="tpd_{{ h }}"
-            type="number"
-            min="15"
-            max="300"
-            value="{{ session|attr('tpd_' ~ h) or session.avg_time_per_dog }}"
-            class="w-full border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-brand"
-          />
-        </div>
+        <p class="text-xs font-medium text-center text-gray-500">{{ h }}mm</p>
+        {% endfor %}
+        <p class="text-xs font-medium text-gray-600 py-1">Agility</p>
+        {% for h in [200, 300, 400, 500, 600] %}
+        <input
+          id="tpd_{{ h }}"
+          name="tpd_{{ h }}"
+          type="number"
+          min="15"
+          max="300"
+          value="{{ session|attr('tpd_' ~ h) or session.avg_time_per_dog }}"
+          class="w-full border rounded-lg px-1 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand"
+        />
+        {% endfor %}
+        <p class="text-xs font-medium text-gray-600 py-1">Jumping</p>
+        {% for h in [200, 300, 400, 500, 600] %}
+        <input
+          id="tpd_jumping_{{ h }}"
+          name="tpd_jumping_{{ h }}"
+          type="number"
+          min="15"
+          max="300"
+          value="{{ session|attr('tpd_jumping_' ~ h) or session.avg_time_per_dog }}"
+          class="w-full border rounded-lg px-1 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand"
+        />
         {% endfor %}
       </div>
     </div>

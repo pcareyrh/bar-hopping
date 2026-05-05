@@ -41,6 +41,14 @@ def _migrate() -> None:
                 backfill_sql=f"UPDATE sessions SET {col} = COALESCE(avg_time_per_dog, 90) WHERE {col} IS NULL",
             )
 
+        # Per-height Jumping tpd columns, backfilled from matching Agility values.
+        for h in HEIGHT_GROUPS:
+            col = f"tpd_jumping_{h}"
+            _add_column_if_missing(
+                conn, "sessions", col, "INTEGER",
+                backfill_sql=f"UPDATE sessions SET {col} = COALESCE(tpd_{h}, avg_time_per_dog, 90) WHERE {col} IS NULL",
+            )
+
         # Past-results extensions on sessions and trials.
         _add_column_if_missing(conn, "sessions", "last_results_view_at", "TIMESTAMP")
         _add_column_if_missing(conn, "trials", "discipline", "INTEGER")

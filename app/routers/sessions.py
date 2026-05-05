@@ -134,6 +134,11 @@ def update_settings(
     tpd_400: int = Form(90),
     tpd_500: int = Form(90),
     tpd_600: int = Form(90),
+    tpd_jumping_200: int = Form(90),
+    tpd_jumping_300: int = Form(90),
+    tpd_jumping_400: int = Form(90),
+    tpd_jumping_500: int = Form(90),
+    tpd_jumping_600: int = Form(90),
     default_setup_mins: int = Form(10),
     default_walk_mins: int = Form(10),
     db: DBSession = Depends(get_db),
@@ -144,6 +149,11 @@ def update_settings(
     session.tpd_400 = tpd_400
     session.tpd_500 = tpd_500
     session.tpd_600 = tpd_600
+    session.tpd_jumping_200 = tpd_jumping_200
+    session.tpd_jumping_300 = tpd_jumping_300
+    session.tpd_jumping_400 = tpd_jumping_400
+    session.tpd_jumping_500 = tpd_jumping_500
+    session.tpd_jumping_600 = tpd_jumping_600
     session.default_setup_mins = default_setup_mins
     session.default_walk_mins = default_walk_mins
     db.commit()

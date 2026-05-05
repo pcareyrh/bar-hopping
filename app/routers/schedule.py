@@ -215,7 +215,7 @@ def _compute_catalogue_blocks(
                     b["setup_mins"] = 0
                     b["walk_mins"] = 0
                 b["first_run"] = cursor
-                cursor += timedelta(seconds=b["count"] * tpd_for_height(b["height_group"]))
+                cursor += timedelta(seconds=b["count"] * tpd_for_height(b["height_group"], b["event_name"]))
                 b["last_run"] = cursor
                 out.append(b)
 
@@ -287,7 +287,7 @@ def _build_predictions(
 
         cs = _match_class_schedule(all_class_schedules, ce.event_name)
 
-        height_tpd = session.tpd_for(ce.height_group)
+        height_tpd = session.tpd_for(ce.height_group, ce.event_name)
         if cs and cs.scheduled_start:
             pred = predict_run(
                 scheduled_start=cs.scheduled_start,

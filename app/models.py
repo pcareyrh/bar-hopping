@@ -58,15 +58,22 @@ class Session(Base):
     tpd_400 = Column(Integer, default=90)
     tpd_500 = Column(Integer, default=90)
     tpd_600 = Column(Integer, default=90)
+    tpd_jumping_200 = Column(Integer, default=90)
+    tpd_jumping_300 = Column(Integer, default=90)
+    tpd_jumping_400 = Column(Integer, default=90)
+    tpd_jumping_500 = Column(Integer, default=90)
+    tpd_jumping_600 = Column(Integer, default=90)
     default_setup_mins = Column(Integer, default=10)
     default_walk_mins = Column(Integer, default=10)
     last_results_view_at = Column(DateTime, nullable=True)
 
     entries = relationship("SessionEntry", back_populates="session", cascade="all, delete-orphan")
 
-    def tpd_for(self, height_group: int | None) -> int:
+    def tpd_for(self, height_group: int | None, event_name: str | None = None) -> int:
+        is_jumping = "jumping" in (event_name or "").lower()
         if height_group in HEIGHT_GROUPS:
-            value = getattr(self, f"tpd_{height_group}", None)
+            col = f"tpd_jumping_{height_group}" if is_jumping else f"tpd_{height_group}"
+            value = getattr(self, col, None)
             if value is not None:
                 return value
         return self.avg_time_per_dog or 90
