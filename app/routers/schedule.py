@@ -186,7 +186,7 @@ def _compute_catalogue_blocks(
         rings: dict[str, list[dict]] = {}
         for event in sorted(event_heights, key=lambda e: event_order[e]):
             ring = _ring_of(event)
-            for height in sorted(event_heights[event]):
+            for height in event_heights[event]:
                 rings.setdefault(ring, []).append({
                     "event_name": event,
                     "height_group": height,
