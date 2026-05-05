@@ -63,7 +63,8 @@ def parse_catalogue_entries_html(html: str) -> list[dict]:
     results: list[dict] = []
     seen: set[tuple[str, str]] = set()  # (event_name, cat_number) uniqueness guard
 
-    current_day = "Sat"
+    current_day_label = "Sat"
+    current_day_num = 1
     card_body = soup.select_one(".card-body")
     if not card_body:
         return []
@@ -78,7 +79,12 @@ def parse_catalogue_entries_html(html: str) -> list[dict]:
             h6 = el.find("h6")
             if h6:
                 day_text = h6.get_text(strip=True).lower()
-                current_day = "Sun" if "sun" in day_text else "Sat"
+                if "sun" in day_text:
+                    current_day_label = "Sun"
+                    current_day_num = 2
+                else:
+                    current_day_label = "Sat"
+                    current_day_num = 1
             continue
 
         # Class block: d-block text-dark rounded
@@ -98,7 +104,7 @@ def parse_catalogue_entries_html(html: str) -> list[dict]:
             if height not in (200, 300, 400, 500, 600):
                 continue
 
-            cat_number = f"~{current_day}~{height}"
+            cat_number = f"~{current_day_label}~{height}"
             key = (event_name, cat_number)
             if key in seen:
                 continue
@@ -107,6 +113,7 @@ def parse_catalogue_entries_html(html: str) -> list[dict]:
             results.append({
                 "event_name": event_name,
                 "cat_number": cat_number,
+                "day": current_day_num,
                 "height_group": height,
                 "run_position": 0,
                 "height_group_total": count,
@@ -128,38 +135,59 @@ def _normalize_event_name(s: str) -> str:
     return s.strip()
 
 
+def _flush_height_groups(results: list, height_groups: dict, day: int) -> None:
+    for (event_name, height_group), entries in height_groups.items():
+        non_nfc_total = sum(1 for _, nfc, _, _ in entries if not nfc)
+        for pos, (cat_number, nfc, dog_name, handler_name) in enumerate(entries, start=1):
+            results.append({
+                "event_name": event_name,
+                "cat_number": cat_number,
+                "day": day,
+                "height_group": height_group,
+                "run_position": pos,
+                "height_group_total": non_nfc_total,
+                "nfc": nfc,
+                "dog_name": dog_name,
+                "handler_name": handler_name,
+            })
+
+
 def _parse_worksheet(ws) -> list[dict]:
     current_event: str | None = None
     current_height: int | None = None
-    # Per (event, height) → list of (cat_number, nfc, dog_name, handler_name)
+    current_day = 1
+    # Track which events have appeared this day to detect day boundaries.
+    seen_events: set[str] = set()
     height_groups: dict[tuple, list] = {}
+    results: list[dict] = []
 
     for row in ws.iter_rows(values_only=True):
         col_a = str(row[0]).strip() if row[0] is not None else ""
-        col_b = row[1]  # Height integer or None
+        col_b = row[1]
 
-        # Event header row
         if "Agility Trial" in col_a:
-            current_event = _normalize_event_name(col_a)
+            event = _normalize_event_name(col_a)
+            # Same event appearing again means we crossed into the next day.
+            if event in seen_events:
+                _flush_height_groups(results, height_groups, current_day)
+                height_groups = {}
+                seen_events = set()
+                current_day += 1
+            current_event = event
+            seen_events.add(event)
             current_height = None
             continue
 
-        # Column header row
         if col_a == "Cat#":
             continue
-
-        # Skip completely empty rows
         if not col_a:
             continue
-
-        # Data row — col_a is cat_number
         if current_event is None:
             continue
 
         cat_number = col_a
         nfc = cat_number.upper().endswith("NFC")
         height = int(col_b) if isinstance(col_b, (int, float)) else current_height
-
         if height is None:
             continue
 
@@ -172,20 +200,5 @@ def _parse_worksheet(ws) -> list[dict]:
             height_groups[key] = []
         height_groups[key].append((cat_number, nfc, dog_name, handler_name))
 
-    # Build result list with positions and totals
-    results = []
-    for (event_name, height_group), entries in height_groups.items():
-        non_nfc_total = sum(1 for _, nfc, _, _ in entries if not nfc)
-        for pos, (cat_number, nfc, dog_name, handler_name) in enumerate(entries, start=1):
-            results.append({
-                "event_name": event_name,
-                "cat_number": cat_number,
-                "height_group": height_group,
-                "run_position": pos,
-                "height_group_total": non_nfc_total,
-                "nfc": nfc,
-                "dog_name": dog_name,
-                "handler_name": handler_name,
-            })
-
+    _flush_height_groups(results, height_groups, current_day)
     return results

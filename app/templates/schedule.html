@@ -34,7 +34,14 @@
   <p class="text-xs text-gray-400 mb-2">Estimated from a {{ trial_start_str }} start using the catalogue order.</p>
   {% endif %}
   <div class="space-y-1">
+    {% set ns = namespace(prev_day=0) %}
     {% for b in day_blocks %}
+    {% if b.day != ns.prev_day %}
+    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-2 {% if not loop.first %}mt-2{% endif %}">
+      Day {{ b.day }}{% if b.trial_date %} — {{ b.trial_date.strftime("%-d %B") }}{% endif %}
+    </p>
+    {% set ns.prev_day = b.day %}
+    {% endif %}
     {% if b.setup_start %}
     <div class="flex items-center justify-between border border-dashed border-gray-200 rounded-lg px-3 py-1.5 text-xs text-gray-500 bg-gray-50">
       <p>Setup + walk · {{ b.ring }} ring <span class="text-gray-400">({{ b.setup_mins }}+{{ b.walk_mins }} min)</span></p>

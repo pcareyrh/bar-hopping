@@ -101,6 +101,7 @@ class CatalogueEntry(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     trial_id = Column(Integer, ForeignKey("trials.id"), nullable=False)
+    day = Column(Integer, nullable=False, default=1)
     event_name = Column(String, nullable=False)
     cat_number = Column(String, nullable=False)
     height_group = Column(Integer, nullable=False)

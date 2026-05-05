@@ -149,56 +149,71 @@ def _compute_catalogue_blocks(
     if not cat_entries:
         return []
 
-    # Group by (event, height) with counts; preserve catalogue encounter order
-    # for both the event sequence and the heights within each event (NSW
-    # judging order doesn't always run heights ascending).
-    counts: dict[tuple[str, int], int] = {}
-    event_order: dict[str, int] = {}
-    event_heights: dict[str, list[int]] = {}
+    # Group entries by day number.
+    from collections import defaultdict
+    by_day: dict[int, list] = defaultdict(list)
     for ce in cat_entries:
-        counts[(ce.event_name, ce.height_group)] = counts.get((ce.event_name, ce.height_group), 0) + 1
-        if ce.event_name not in event_order:
-            event_order[ce.event_name] = len(event_order)
-        heights = event_heights.setdefault(ce.event_name, [])
-        if ce.height_group not in heights:
-            heights.append(ce.height_group)
+        by_day[getattr(ce, "day", 1) or 1].append(ce)
 
-    # Build per-ring running order.
-    rings: dict[str, list[dict]] = {}
-    for event in sorted(event_heights, key=lambda e: event_order[e]):
-        ring = _ring_of(event)
-        ring_list = rings.setdefault(ring, [])
-        for height in event_heights[event]:
-            ring_list.append({
-                "event_name": event,
-                "height_group": height,
-                "ring": ring,
-                "count": counts[(event, height)],
-            })
-
-    # Walk each ring sequentially from base_start. Setup + walk happens once
-    # per event (judge briefing + course walk for the new course), not once
-    # per height — heights of the same event run back-to-back.
     base_date = trial.start_date or date.today()
     out: list[dict] = []
-    for ring_name, blocks in rings.items():
-        cursor = datetime.combine(base_date, base_start)
-        last_event: str | None = None
-        for b in blocks:
-            if b["event_name"] != last_event:
-                b["setup_start"] = cursor
-                b["setup_mins"] = setup_mins
-                b["walk_mins"] = walk_mins
-                cursor += timedelta(minutes=setup_mins + walk_mins)
-                last_event = b["event_name"]
-            else:
-                b["setup_start"] = None
-                b["setup_mins"] = 0
-                b["walk_mins"] = 0
-            b["first_run"] = cursor
-            cursor += timedelta(seconds=b["count"] * tpd_for_height(b["height_group"]))
-            b["last_run"] = cursor
-            out.append(b)
+
+    for day_num in sorted(by_day.keys()):
+        day_entries = by_day[day_num]
+        day_date = base_date + timedelta(days=day_num - 1)
+
+        # Group by (event, height); preserve catalogue encounter order.
+        counts: dict[tuple[str, int], int] = {}
+        max_total: dict[tuple[str, int], int] = {}
+        event_order: dict[str, int] = {}
+        event_heights: dict[str, list[int]] = {}
+        for ce in day_entries:
+            key = (ce.event_name, ce.height_group)
+            counts[key] = counts.get(key, 0) + 1
+            max_total[key] = max(max_total.get(key, 0), ce.height_group_total or 0)
+            if ce.event_name not in event_order:
+                event_order[ce.event_name] = len(event_order)
+            heights = event_heights.setdefault(ce.event_name, [])
+            if ce.height_group not in heights:
+                heights.append(ce.height_group)
+
+        # For HTML sentinel entries (run_position=0, one row per class/height),
+        # height_group_total is the real dog count; use whichever is larger.
+        for key in counts:
+            counts[key] = max(counts[key], max_total[key])
+
+        # Build per-ring running order.
+        rings: dict[str, list[dict]] = {}
+        for event in sorted(event_heights, key=lambda e: event_order[e]):
+            ring = _ring_of(event)
+            for height in event_heights[event]:
+                rings.setdefault(ring, []).append({
+                    "event_name": event,
+                    "height_group": height,
+                    "ring": ring,
+                    "count": counts[(event, height)],
+                    "day": day_num,
+                    "trial_date": day_date,
+                })
+
+        for ring_name, blocks in rings.items():
+            cursor = datetime.combine(day_date, base_start)
+            last_event: str | None = None
+            for b in blocks:
+                if b["event_name"] != last_event:
+                    b["setup_start"] = cursor
+                    b["setup_mins"] = setup_mins
+                    b["walk_mins"] = walk_mins
+                    cursor += timedelta(minutes=setup_mins + walk_mins)
+                    last_event = b["event_name"]
+                else:
+                    b["setup_start"] = None
+                    b["setup_mins"] = 0
+                    b["walk_mins"] = 0
+                b["first_run"] = cursor
+                cursor += timedelta(seconds=b["count"] * tpd_for_height(b["height_group"]))
+                b["last_run"] = cursor
+                out.append(b)
 
     out.sort(key=lambda b: b["first_run"])
     return out
@@ -233,8 +248,8 @@ def _build_predictions(
                 tpd_for_height=session.tpd_for,
             )
         )
-    block_starts: dict[tuple[str, int], datetime] = {
-        (b["event_name"], b["height_group"]): b["first_run"] for b in day_blocks
+    block_starts: dict[tuple[str, int, int], datetime] = {
+        (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"] for b in day_blocks
     }
 
     all_class_schedules = (
@@ -282,9 +297,9 @@ def _build_predictions(
             )
             predicted_start = pred["predicted_start"]
             predicted_start_str = format_predicted_time(predicted_start)
-        elif (ce.event_name, ce.height_group) in block_starts:
+        elif (ce.event_name, ce.height_group, getattr(ce, "day", 1) or 1) in block_starts:
             pred = predict_run_from_block(
-                block_first_run=block_starts[(ce.event_name, ce.height_group)],
+                block_first_run=block_starts[(ce.event_name, ce.height_group, getattr(ce, "day", 1) or 1)],
                 run_position=ce.run_position,
                 avg_time_per_dog=height_tpd,
                 position_override=entry.position_override,

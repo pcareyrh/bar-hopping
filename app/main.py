@@ -45,6 +45,10 @@ def _migrate() -> None:
         _add_column_if_missing(conn, "sessions", "last_results_view_at", "TIMESTAMP")
         _add_column_if_missing(conn, "trials", "discipline", "INTEGER")
         _add_column_if_missing(conn, "trials", "start_time", "TIME")
+        _add_column_if_missing(
+            conn, "catalogue_entries", "day", "INTEGER",
+            backfill_sql="UPDATE catalogue_entries SET day = 1 WHERE day IS NULL",
+        )
         _add_column_if_missing(conn, "trials", "results_synced_at", "TIMESTAMP")
         _add_column_if_missing(conn, "trials", "results_status", "VARCHAR")
 
