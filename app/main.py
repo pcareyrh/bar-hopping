@@ -44,6 +44,7 @@ def _migrate() -> None:
         # Past-results extensions on sessions and trials.
         _add_column_if_missing(conn, "sessions", "last_results_view_at", "TIMESTAMP")
         _add_column_if_missing(conn, "trials", "discipline", "INTEGER")
+        _add_column_if_missing(conn, "trials", "start_time", "TIME")
         _add_column_if_missing(conn, "trials", "results_synced_at", "TIMESTAMP")
         _add_column_if_missing(conn, "trials", "results_status", "VARCHAR")
 

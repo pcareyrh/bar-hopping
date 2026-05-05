@@ -79,6 +79,7 @@ class Trial(Base):
     external_id = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
     start_date = Column(Date, nullable=True)
+    start_time = Column(Time, nullable=True)
     end_date = Column(Date, nullable=True)
     venue = Column(String, nullable=True)
     state = Column(String, nullable=True)

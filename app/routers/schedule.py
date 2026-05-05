@@ -29,11 +29,12 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
     has_class_schedules = (
         db.query(ClassSchedule.id).filter(ClassSchedule.trial_id == trial_id).first() is not None
     )
+    trial_start = trial.start_time or DEFAULT_TRIAL_START
     day_blocks: list[dict] = []
     if not has_class_schedules:
         day_blocks = _compute_catalogue_blocks(
             trial, db,
-            base_start=DEFAULT_TRIAL_START,
+            base_start=trial_start,
             setup_mins=session.default_setup_mins,
             walk_mins=session.default_walk_mins,
             tpd_for_height=session.tpd_for,
@@ -58,7 +59,7 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
             "predictions": predictions,
             "day_blocks": day_blocks,
             "trial_start_str": format_predicted_time(
-                datetime.combine(trial.start_date or date.today(), DEFAULT_TRIAL_START)
+                datetime.combine(trial.start_date or date.today(), trial_start)
             ) if not has_class_schedules else None,
         },
     )
@@ -226,7 +227,7 @@ def _build_predictions(
             if has_class_schedules
             else _compute_catalogue_blocks(
                 trial, db,
-                base_start=DEFAULT_TRIAL_START,
+                base_start=trial.start_time or DEFAULT_TRIAL_START,
                 setup_mins=session.default_setup_mins,
                 walk_mins=session.default_walk_mins,
                 tpd_for_height=session.tpd_for,

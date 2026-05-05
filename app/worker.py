@@ -176,6 +176,9 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                     log.info("refresh_trial_docs_job: updated catalogue_doc_url to %s", trial.catalogue_doc_url)
                 if detail.get("schedule_doc_url") and not trial.schedule_doc_url:
                     trial.schedule_doc_url = detail["schedule_doc_url"]
+                if detail.get("start_time"):
+                    trial.start_time = detail["start_time"]
+                    log.info("refresh_trial_docs_job: updated start_time to %s", trial.start_time)
                 db.commit()
             except Exception as e:
                 log.warning("refresh_trial_docs_job: trial detail re-scrape failed: %s", e)

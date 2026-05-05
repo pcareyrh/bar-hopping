@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 BASE_URL = "https://www.topdogevents.com.au"
 
 DATE_RE = re.compile(r"(\d{1,2})(?:st|nd|rd|th)?\s+(\w+)\s+(\d{4})")
+JUDGING_RE = re.compile(r"Judging starts?\s+at\s+(\d{1,2}:\d{2}\s*(?:AM|PM))", re.I)
 MONTH_MAP = {
     "Jan": "January", "Feb": "February", "Mar": "March", "Apr": "April",
     "May": "May", "Jun": "June", "Jul": "July", "Aug": "August",
@@ -115,5 +116,14 @@ def _parse_trial_detail(external_id: str, html: str) -> dict:
             parts.append(address.get_text(" ", strip=True))
         if parts:
             result["venue"] = " — ".join(parts)
+
+    m = JUDGING_RE.search(soup.get_text(" "))
+    if m:
+        for fmt in ("%I:%M %p", "%I:%M%p"):
+            try:
+                result["start_time"] = datetime.strptime(m.group(1).strip().upper(), fmt).time()
+                break
+            except ValueError:
+                pass
 
     return result
