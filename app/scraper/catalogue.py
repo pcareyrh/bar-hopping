@@ -1,10 +1,13 @@
-"""Parse FINAL catalogue .xlsx files from TopDog, and HTML entries summary pages."""
+"""Parse FINAL catalogue files (.xlsx or .pdf) from TopDog, and HTML entries summary pages."""
 import io
+import logging
 import re
 import httpx
 import openpyxl
 from typing import BinaryIO
 from bs4 import BeautifulSoup
+
+log = logging.getLogger(__name__)
 
 
 def parse_catalogue_xlsx(file_obj: BinaryIO) -> list[dict]:
@@ -26,10 +29,150 @@ def parse_catalogue_xlsx(file_obj: BinaryIO) -> list[dict]:
     return _parse_worksheet(ws)
 
 
+def parse_catalogue_pdf(data: bytes) -> list[dict]:
+    """Parse a TopDog FINAL catalogue PDF.
+
+    Uses pdfplumber word positions to reliably split dog name from handler
+    based on the fixed column layout used by TopDog catalogue PDFs.
+
+    Returns list of dicts with the same schema as parse_catalogue_xlsx.
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        log.warning("pdfplumber not installed — cannot parse PDF catalogue")
+        return []
+
+    results: list[dict] = []
+    current_event: str | None = None
+    current_day = 1
+    seen_events: set[str] = set()
+    height_groups: dict[tuple, list] = {}
+
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        for page in pdf.pages:
+            lines = _extract_pdf_lines(page)
+            for line in lines:
+                full_text = line["text"]
+
+                # Class header: "Saturday - Novice Jumping (JD) Judge: ..."
+                header_m = re.match(
+                    r"^(Saturday|Sunday)\s*-\s*(.+?)\s*\([A-Z]+\)\s*Judge:",
+                    full_text, re.I,
+                )
+                if header_m:
+                    day_str = header_m.group(1).lower()
+                    event = header_m.group(2).strip()
+                    day_num = 2 if "sun" in day_str else 1
+                    # Day boundary: same event reappearing means new day
+                    if event in seen_events and day_num == current_day:
+                        _flush_height_groups(results, height_groups, current_day)
+                        height_groups = {}
+                        seen_events = set()
+                        current_day += 1
+                    elif day_num != current_day:
+                        _flush_height_groups(results, height_groups, current_day)
+                        height_groups = {}
+                        seen_events = set()
+                        current_day = day_num
+                    current_event = event
+                    seen_events.add(event)
+                    continue
+
+                # Skip column headers and height-change markers
+                if full_text.startswith("Cat#") or "Height Change" in full_text:
+                    continue
+
+                # Entry row: starts with a cat number (digits, possibly ending in NFC)
+                if current_event is None:
+                    continue
+                entry_m = re.match(r"^(\d{2,4})(NFC)?\s", full_text)
+                if not entry_m:
+                    continue
+
+                cat_number = entry_m.group(1) + (entry_m.group(2) or "")
+                nfc = entry_m.group(2) is not None
+                cat_digits = int(entry_m.group(1))
+                height_group = (cat_digits // 100) * 100
+                if height_group not in (200, 300, 400, 500, 600):
+                    continue
+
+                dog_name, handler_name = _split_dog_handler(line["words"])
+
+                key = (current_event, height_group)
+                if key not in height_groups:
+                    height_groups[key] = []
+                height_groups[key].append((cat_number, nfc, dog_name, handler_name))
+
+    _flush_height_groups(results, height_groups, current_day)
+    return results
+
+
+# Column boundary constants (from TopDog PDF layout, consistent across pages).
+_DOG_NAME_X = 57.0    # Dog Name column starts here
+_HANDLER_X = 290.0    # Handler column starts here
+_BREED_X = 394.0      # Breed column starts here
+
+
+def _extract_pdf_lines(page) -> list[dict]:
+    """Extract words from a page and group into logical lines.
+
+    Returns list of dicts with keys: 'text' (full line), 'words' (list of
+    word dicts with 'text' and 'x0' keys).
+    """
+    words = page.extract_words(keep_blank_chars=True)
+    if not words:
+        return []
+
+    # Group by y-position (tolerance of 3 units for same-line words)
+    lines_by_y: dict[float, list] = {}
+    for w in words:
+        y = round(w["top"] / 3) * 3  # bucket into 3-unit bands
+        if y not in lines_by_y:
+            lines_by_y[y] = []
+        lines_by_y[y].append({"text": w["text"], "x0": w["x0"]})
+
+    result = []
+    for y in sorted(lines_by_y.keys()):
+        line_words = sorted(lines_by_y[y], key=lambda w: w["x0"])
+        full_text = " ".join(w["text"] for w in line_words)
+        result.append({"text": full_text, "words": line_words})
+    return result
+
+
+def _split_dog_handler(words: list[dict]) -> tuple[str | None, str | None]:
+    """Split word list into dog name and handler using column x-positions."""
+    dog_parts = []
+    handler_parts = []
+
+    for w in words:
+        x = w["x0"]
+        if x < _DOG_NAME_X:
+            continue  # cat# column
+        elif x < _HANDLER_X:
+            dog_parts.append(w["text"])
+        elif x < _BREED_X:
+            handler_parts.append(w["text"])
+        # Ignore breed and reg# columns
+
+    dog_name = " ".join(dog_parts).strip() or None
+    handler_name = " ".join(handler_parts).strip() or None
+    return dog_name, handler_name
+
+
 async def download_and_parse_catalogue(url: str) -> list[dict]:
+    """Download a catalogue (xlsx or PDF) and parse it."""
     async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
         resp = await client.get(url)
         resp.raise_for_status()
+    content_type = resp.headers.get("content-type", "")
+    if "pdf" in content_type or url.lower().endswith(".pdf") or url.endswith("/get"):
+        # TopDog's /catalogue/get endpoint returns PDF with application/pdf content-type.
+        # Also sniff the first bytes for PDF magic number.
+        if resp.content[:5] == b"%PDF-" or "pdf" in content_type:
+            log.info("Parsing catalogue as PDF (%d bytes)", len(resp.content))
+            return parse_catalogue_pdf(resp.content)
+    log.info("Parsing catalogue as xlsx (%d bytes)", len(resp.content))
     return parse_catalogue_xlsx(io.BytesIO(resp.content))
 
 

@@ -189,7 +189,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                         log.info("refresh_trial_docs_job: fetching HTML entries from %s", trial.catalogue_doc_url)
                         entries = await download_and_parse_catalogue_entries(trial.catalogue_doc_url)
                     else:
-                        log.info("refresh_trial_docs_job: fetching xlsx catalogue from %s", trial.catalogue_doc_url)
+                        log.info("refresh_trial_docs_job: fetching catalogue from %s", trial.catalogue_doc_url)
                         entries = await download_and_parse_catalogue(trial.catalogue_doc_url)
                     log.info("refresh_trial_docs_job: %d catalogue entries parsed", len(entries))
                 except Exception as e:
