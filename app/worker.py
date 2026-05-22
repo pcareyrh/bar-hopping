@@ -122,9 +122,16 @@ def sync_session_job(session_uuid: str) -> None:
 
             queue = get_queue()
             for trial in user_trial_rows:
-                needs_cat = trial.catalogue_doc_url and not db.query(CatalogueEntry.id).filter(
+                has_cat_rows = db.query(CatalogueEntry.id).filter(
                     CatalogueEntry.trial_id == trial.id
                 ).first()
+                cat_url_is_entries = bool(
+                    trial.catalogue_doc_url
+                    and trial.catalogue_doc_url.rstrip("/").endswith("/entries")
+                )
+                # Re-scrape if we have no URL/no rows yet, or if the stored URL is
+                # the /entries HTML fallback (an xlsx may have been published since).
+                needs_cat = (trial.catalogue_doc_url and not has_cat_rows) or cat_url_is_entries
                 needs_sched = trial.schedule_doc_url and not db.query(ClassSchedule.id).filter(
                     ClassSchedule.trial_id == trial.id
                 ).first()
@@ -171,9 +178,16 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                 detail = await fetch_trial_detail(trial.external_id)
                 log.info("refresh_trial_docs_job: detail catalogue_doc_url=%s schedule_doc_url=%s",
                          detail.get("catalogue_doc_url"), detail.get("schedule_doc_url"))
-                if detail.get("catalogue_doc_url") and not trial.catalogue_doc_url:
-                    trial.catalogue_doc_url = detail["catalogue_doc_url"]
-                    log.info("refresh_trial_docs_job: updated catalogue_doc_url to %s", trial.catalogue_doc_url)
+                new_cat = detail.get("catalogue_doc_url")
+                if new_cat and new_cat != trial.catalogue_doc_url:
+                    current_is_entries = bool(
+                        trial.catalogue_doc_url
+                        and trial.catalogue_doc_url.rstrip("/").endswith("/entries")
+                    )
+                    new_is_entries = new_cat.rstrip("/").endswith("/entries")
+                    if not trial.catalogue_doc_url or (current_is_entries and not new_is_entries):
+                        trial.catalogue_doc_url = new_cat
+                        log.info("refresh_trial_docs_job: updated catalogue_doc_url to %s", trial.catalogue_doc_url)
                 if detail.get("schedule_doc_url") and not trial.schedule_doc_url:
                     trial.schedule_doc_url = detail["schedule_doc_url"]
                 if detail.get("start_time"):
