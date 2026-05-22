@@ -23,6 +23,16 @@ variable "redis_url" {
   default = "redis://bar-hopping-redis.service.consul:6379"
 }
 
+variable "topdog_user" {
+  type    = string
+  default = ""
+}
+
+variable "topdog_pw" {
+  type    = string
+  default = ""
+}
+
 job "bar-hopping" {
   datacenters = ["dc1"]
   type        = "service"
@@ -222,6 +232,8 @@ EOH
       env {
         ENCRYPTION_KEY = var.encryption_key
         DB_PASSWORD    = var.db_password
+        TOPDOG_USER    = var.topdog_user
+        TOPDOG_PW      = var.topdog_pw
       }
 
       template {

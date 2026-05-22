@@ -1,6 +1,7 @@
 """RQ job functions executed inside the worker container."""
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, date
 
 from sqlalchemy import insert, or_, and_
@@ -149,17 +150,50 @@ def sync_session_job(session_uuid: str) -> None:
     asyncio.run(_run())
 
 
-def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> None:
-    """Download and parse catalogue and schedule documents for a trial.
+async def _resolve_auth_cookies(db, session_uuid: str | None) -> dict[str, str] | None:
+    """Get a logged-in TopDog cookie jar.
 
-    Catalogue is public. Schedule requires authentication, so a session_uuid
-    must be supplied to pull decrypted TopDog credentials and obtain a
-    logged-in cookie jar."""
+    Tries the SessionEntry's encrypted credentials first; falls back to
+    the worker-wide TOPDOG_USER / TOPDOG_PW env vars (loaded from .env).
+    Returns None if no working creds are available.
+    """
+    from app.scraper.auth import get_authed_cookies
+
+    if session_uuid:
+        session = db.query(Session).filter(Session.uuid == session_uuid).first()
+        if session and session.topdog_email and session.topdog_password:
+            try:
+                email = crypto.decrypt(session.topdog_email)
+                password = crypto.decrypt(session.topdog_password)
+                return await get_authed_cookies(email, password)
+            except Exception as e:
+                log.warning("auth: session creds failed, falling back to env: %s", e)
+
+    env_user = os.getenv("TOPDOG_USER")
+    env_pw = os.getenv("TOPDOG_PW")
+    if env_user and env_pw:
+        try:
+            return await get_authed_cookies(env_user, env_pw)
+        except Exception as e:
+            log.warning("auth: env creds failed: %s", e)
+
+    return None
+
+
+def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> None:
+    """Download and parse catalogue and schedule data for a trial.
+
+    Preferred source: TopDog's authenticated /trials/{id}/my_day dashboard,
+    which gives both catalogue order and ring schedule in one HTML doc that
+    reflects post-scratch state. Falls back to the legacy public xlsx/PDF
+    catalogue + auth'd schedule scrape when /my_day is unavailable.
+
+    Auth resolves session creds first, then TOPDOG_USER/TOPDOG_PW env vars."""
     async def _run():
         from app.scraper.catalogue import download_and_parse_catalogue, download_and_parse_catalogue_entries
         from app.scraper.schedule import download_and_parse_schedule
-        from app.scraper.auth import get_authed_cookies
         from app.scraper.trials import fetch_trial_detail
+        from app.scraper.my_day import fetch_my_day, MyDayUnavailable, MyDayAuthRequired
 
         db = SessionLocal()
         try:
@@ -170,6 +204,43 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
             log.info("refresh_trial_docs_job: trial %s (id=%d) catalogue_doc_url=%s",
                      trial.external_id, trial_id, trial.catalogue_doc_url)
 
+            cookies = await _resolve_auth_cookies(db, session_uuid)
+
+            my_day_payload = None
+            if cookies is not None:
+                try:
+                    log.info("refresh_trial_docs_job: fetching my_day for trial %s", trial.external_id)
+                    my_day_payload = await fetch_my_day(trial.external_id, cookies)
+                    log.info("refresh_trial_docs_job: my_day yielded %d entries, %d classes",
+                             len(my_day_payload["catalogue_entries"]),
+                             len(my_day_payload["class_schedules"]))
+                except MyDayUnavailable as e:
+                    log.info("refresh_trial_docs_job: my_day unavailable for %s (%s) — falling back to legacy",
+                             trial.external_id, e)
+                except MyDayAuthRequired as e:
+                    log.warning("refresh_trial_docs_job: my_day auth failed for %s: %s", trial.external_id, e)
+                except Exception as e:
+                    log.warning("refresh_trial_docs_job: my_day fetch failed for %s: %s", trial.external_id, e)
+
+            if my_day_payload and my_day_payload["catalogue_entries"]:
+                # Replace catalogue + schedule in one shot from my_day.
+                db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
+                    {"catalogue_entry_id": None}, synchronize_session=False
+                )
+                db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
+                for e in my_day_payload["catalogue_entries"]:
+                    db.add(CatalogueEntry(trial_id=trial_id, **e))
+                db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial_id).delete()
+                for c in my_day_payload["class_schedules"]:
+                    db.add(ClassSchedule(trial_id=trial_id, **c))
+                if my_day_payload.get("start_time"):
+                    trial.start_time = my_day_payload["start_time"]
+                trial.scraped_at = datetime.utcnow()
+                db.commit()
+                _resolve_catalogue_links(trial, db)
+                return
+
+            # ----- Legacy fallback path -----
             # Re-scrape the trial detail page to pick up catalogue/schedule URLs
             # that may have appeared since the trial was first added (e.g. entries
             # closed after initial sync, or format changed to HTML entries page).
@@ -210,7 +281,6 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                     log.warning("refresh_trial_docs_job: catalogue download/parse failed: %s", e)
                     entries = []
                 if entries:
-                    # Unlink session entries so we can replace catalogue rows without FK violations.
                     db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
                         {"catalogue_entry_id": None}, synchronize_session=False
                     )
@@ -221,17 +291,6 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                     _resolve_catalogue_links(trial, db)
 
             if trial.schedule_doc_url:
-                cookies: dict[str, str] | None = None
-                if session_uuid:
-                    session = db.query(Session).filter(Session.uuid == session_uuid).first()
-                    if session:
-                        try:
-                            email = crypto.decrypt(session.topdog_email)
-                            password = crypto.decrypt(session.topdog_password)
-                            cookies = await get_authed_cookies(email, password)
-                        except Exception as e:
-                            log.warning("refresh_trial_docs_job: schedule auth failed: %s", e)
-
                 if cookies is None:
                     log.info("refresh_trial_docs_job: skipping schedule for trial %s — no auth", trial_id)
                 else:
