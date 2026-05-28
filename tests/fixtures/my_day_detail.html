@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<body>
+<div id="my-day-progress">
+
+  <!-- 200 height group -->
+  <div class="my-day-height-separator">200</div>
+
+  <div class="my-day-entry-row" id="entry-101">
+    <span class="badge">201</span>
+    <strong>Buddy</strong>
+    <span class="text-muted">· John Smith</span>
+  </div>
+
+  <div class="my-day-entry-row" id="entry-102">
+    <span class="badge">202</span>
+    <strong>Luna</strong>
+    <span class="text-muted">· Jane Doe</span>
+  </div>
+
+  <!-- NFC entry -->
+  <div class="my-day-entry-row" id="entry-103">
+    <span class="badge">203NFC</span>
+    <strong>Rocket</strong>
+    <span class="text-muted">· Bob Brown</span>
+  </div>
+
+  <!-- 300 height group -->
+  <div class="my-day-height-separator">300</div>
+
+  <div class="my-day-entry-row" id="entry-201">
+    <span class="badge">301</span>
+    <strong>Max</strong>
+    <span class="text-muted">· Alice Green</span>
+  </div>
+
+  <!-- More upcoming collapse section — duplicate entry ids should be skipped -->
+  <div class="my-day-height-separator">More upcoming</div>
+
+  <div class="my-day-entry-row" id="entry-101">
+    <span class="badge">201</span>
+    <strong>Buddy</strong>
+    <span class="text-muted">· John Smith</span>
+  </div>
+
+  <!-- Invalid cat number (letters only) — should be skipped -->
+  <div class="my-day-entry-row" id="entry-999">
+    <span class="badge">ABC</span>
+    <strong>Ghost</strong>
+    <span class="text-muted">· Nobody</span>
+  </div>
+
+</div>
+</body>
+</html>
