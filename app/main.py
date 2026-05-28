@@ -32,6 +32,10 @@ def _add_column_if_missing(conn, table: str, column: str, ddl: str, backfill_sql
 
 def _migrate() -> None:
     """Idempotent additive migrations for both SQLite and Postgres."""
+    # TODO: orphaned results-feature schema (columns last_results_view_at,
+    # results_synced_at, results_status; tables dogs, trial_results) still
+    # exists in deployed databases. Run migrations/cleanup_results_schema.py
+    # after backing up trial_results data — see migrations/README.md.
     with engine.begin() as conn:
         # Per-height time-per-dog columns on sessions, backfilled from avg_time_per_dog.
         for h in HEIGHT_GROUPS:
