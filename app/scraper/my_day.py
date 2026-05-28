@@ -22,6 +22,7 @@ Returned shape from `fetch_my_day`:
         "start_time": <datetime.time or None>,
     }
 """
+import asyncio
 import logging
 import re
 from datetime import time as dtime, datetime
@@ -252,56 +253,77 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
         if not sessions:
             raise MyDayUnavailable(f"my_day index empty for trial {external_id}")
 
+        # Flatten all classes (with metadata) into a stable ordered list so
+        # asyncio.gather can return results in matching order.
+        class_tasks: list[tuple] = []  # (day_num, start_time, ring_name, class_idx, cls)
+        for session in sessions:
+            for ring in session["rings"]:
+                for class_idx, cls in enumerate(ring["classes"]):
+                    class_tasks.append((
+                        session["day_num"],
+                        session["start_time"],
+                        ring["ring_name"],
+                        class_idx,
+                        cls,
+                    ))
+
+        # Fetch all class-detail pages concurrently (max 4 in flight).
+        sem = asyncio.Semaphore(4)
+
+        async def _fetch_detail(url: str) -> str | None:
+            async with sem:
+                try:
+                    dr = await c.get(url)
+                    dr.raise_for_status()
+                    return dr.text
+                except Exception as e:
+                    log.warning("my_day: failed to fetch %s: %s", url, e)
+                    return None
+
+        detail_htmls = await asyncio.gather(*[
+            _fetch_detail(BASE_URL + t[4]["href"]) for t in class_tasks
+        ])
+
         catalogue_entries: list[dict] = []
         class_schedules: list[dict] = []
         seen_cat: set[tuple[str, str]] = set()  # (event_name, cat_number)
 
-        for session in sessions:
-            day_num = session["day_num"]
-            start_time = session["start_time"]
-            for ring in session["rings"]:
-                ring_name = ring["ring_name"]
-                for class_idx, cls in enumerate(ring["classes"]):
-                    class_name = cls["class_name"]
-                    detail_url = BASE_URL + cls["href"]
-                    try:
-                        dr = await c.get(detail_url)
-                        dr.raise_for_status()
-                    except Exception as e:
-                        log.warning("my_day: failed to fetch %s: %s", detail_url, e)
+        for (day_num, start_time, ring_name, class_idx, cls), html in zip(class_tasks, detail_htmls):
+            if html is None:
+                continue
+            class_name = cls["class_name"]
+            entries = parse_my_day_detail(html)
+
+            # Group by height, preserve in-page order for run_position.
+            by_h: dict[int, list[dict]] = {}
+            for e in entries:
+                by_h.setdefault(e["height_group"], []).append(e)
+            for height, group in by_h.items():
+                non_nfc_total = sum(1 for e in group if not e["nfc"])
+                for pos, e in enumerate(group, start=1):
+                    key = (class_name, e["cat_number"])
+                    if key in seen_cat:
                         continue
-                    entries = parse_my_day_detail(dr.text)
-
-                    # Group by height, preserve in-page order for run_position.
-                    by_h: dict[int, list[dict]] = {}
-                    for e in entries:
-                        by_h.setdefault(e["height_group"], []).append(e)
-                    for height, group in by_h.items():
-                        non_nfc_total = sum(1 for e in group if not e["nfc"])
-                        for pos, e in enumerate(group, start=1):
-                            key = (class_name, e["cat_number"])
-                            if key in seen_cat:
-                                continue
-                            seen_cat.add(key)
-                            catalogue_entries.append({
-                                "event_name": class_name,
-                                "cat_number": e["cat_number"],
-                                "day": day_num,
-                                "height_group": height,
-                                "run_position": pos,
-                                "height_group_total": non_nfc_total,
-                                "nfc": e["nfc"],
-                                "dog_name": e["dog_name"],
-                                "handler_name": e["handler_name"],
-                            })
-
-                    class_schedules.append({
-                        "ring_number": ring_name,
-                        "class_name": class_name,
-                        "scheduled_start": start_time if class_idx == 0 else None,
-                        "ring_setup_mins": None,
-                        "walk_mins": None,
+                    seen_cat.add(key)
+                    catalogue_entries.append({
+                        "event_name": class_name,
+                        "cat_number": e["cat_number"],
+                        "day": day_num,
+                        "height_group": height,
+                        "run_position": pos,
+                        "height_group_total": non_nfc_total,
+                        "nfc": e["nfc"],
+                        "dog_name": e["dog_name"],
+                        "handler_name": e["handler_name"],
                     })
+
+            class_schedules.append({
+                "ring_number": ring_name,
+                "class_name": class_name,
+                "scheduled_start": start_time if class_idx == 0 else None,
+                "ring_setup_mins": None,
+                "walk_mins": None,
+            })
 
         earliest = min(
             (s["start_time"] for s in sessions if s.get("start_time")),
