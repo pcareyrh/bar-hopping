@@ -276,7 +276,7 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
                     dr = await c.get(url)
                     dr.raise_for_status()
                     return dr.text
-                except Exception as e:
+                except (httpx.HTTPStatusError, httpx.RequestError) as e:
                     log.warning("my_day: failed to fetch %s: %s", url, e)
                     return None
 
