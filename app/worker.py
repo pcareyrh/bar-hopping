@@ -304,9 +304,16 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
 
 
 def _resolve_catalogue_links(trial: Trial, db) -> None:
+    import re as _re
+    # Strip a trailing " (CODE)" / " (CODE1)" — trial 1482's catalogue tags AM/PM
+    # session codes onto the event_name to keep them distinct, but the user's
+    # /entries page omits the suffix.
+    def _norm(name: str | None) -> str:
+        return _re.sub(r"\s*\([A-Z]{2,4}\d*\)\s*$", "", name or "").strip()
+
     session_entries = db.query(SessionEntry).filter(SessionEntry.trial_id == trial.id).all()
     for se in session_entries:
-        # Primary: exact cat_number + event_name match (xlsx catalogue format)
+        # Primary: exact cat_number + event_name match (xlsx catalogue format).
         if se.cat_number:
             ce = (
                 db.query(CatalogueEntry)
@@ -318,6 +325,19 @@ def _resolve_catalogue_links(trial: Trial, db) -> None:
                 .first()
             )
             if ce:
+                se.catalogue_entry_id = ce.id
+                continue
+            # cat_number is unique within a trial's catalogue; fall back to a
+            # cat-only match and verify event names agree after stripping codes.
+            ce = (
+                db.query(CatalogueEntry)
+                .filter(
+                    CatalogueEntry.trial_id == trial.id,
+                    CatalogueEntry.cat_number == se.cat_number,
+                )
+                .first()
+            )
+            if ce and _norm(ce.event_name) == _norm(se.event_name):
                 se.catalogue_entry_id = ce.id
                 continue
 

@@ -113,9 +113,16 @@ def update_override(
     )
 
 
-def _ring_of(event_name: str) -> str:
-    """Classify a class into a ring. NSW trials with both disciplines run
-    agility in one ring and jumping in another in parallel."""
+def _ring_of(event_name: str, ring_number: str | None = None) -> str:
+    """Classify a class into a ring.
+
+    Prefer the explicit ring_number from the catalogue (e.g. "1", "2") when
+    available. Otherwise fall back to the discipline-based heuristic — NSW
+    trials with both disciplines run agility in one ring and jumping in
+    another in parallel.
+    """
+    if ring_number:
+        return f"Ring {ring_number}"
     n = (event_name or "").lower()
     if "jumping" in n:
         return "Jumping"
@@ -167,12 +174,14 @@ def _compute_catalogue_blocks(
         max_total: dict[tuple[str, int], int] = {}
         event_order: dict[str, int] = {}
         event_heights: dict[str, list[int]] = {}
+        event_rings: dict[str, str | None] = {}
         for ce in day_entries:
             key = (ce.event_name, ce.height_group)
             counts[key] = counts.get(key, 0) + 1
             max_total[key] = max(max_total.get(key, 0), ce.height_group_total or 0)
             if ce.event_name not in event_order:
                 event_order[ce.event_name] = len(event_order)
+                event_rings[ce.event_name] = getattr(ce, "ring_number", None)
             heights = event_heights.setdefault(ce.event_name, [])
             if ce.height_group not in heights:
                 heights.append(ce.height_group)
@@ -185,7 +194,7 @@ def _compute_catalogue_blocks(
         # Build per-ring running order.
         rings: dict[str, list[dict]] = {}
         for event in sorted(event_heights, key=lambda e: event_order[e]):
-            ring = _ring_of(event)
+            ring = _ring_of(event, event_rings.get(event))
             for height in event_heights[event]:
                 rings.setdefault(ring, []).append({
                     "event_name": event,
@@ -322,7 +331,7 @@ def _build_predictions(
             "event_name": ce.event_name,
             "height_group": ce.height_group,
             "cat_number": ce.cat_number,
-            "ring_number": entry.ring_number or (cs.ring_number if cs else None),
+            "ring_number": entry.ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None),
             "run_position": ce.run_position,
             "height_group_total": ce.height_group_total,
             "nfc": ce.nfc,

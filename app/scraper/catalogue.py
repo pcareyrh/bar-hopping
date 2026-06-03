@@ -60,20 +60,67 @@ _RE_HEADER_HEIGHT_INLINE = re.compile(
 )
 # Format B day marker: "Ring 1 SATURDAY AM" / "Ring 2 SUNDAY"
 _RE_RING_DAY = re.compile(r"^Ring\s+\d+\s+(SATURDAY|SUNDAY)\b", re.I)
+# Format C (trial 1482 Saturday): "Saturday Ring 1 AM -Cam List - Novice  Judge: Cam List - AD1"
+# pdfplumber word extraction can corrupt the "Judge:" segment ("ExcellenJu  dge"), so we
+# anchor on day + ring at the start and the class code at the end.
+_RE_HEADER_RING_TRAILING_CODE = re.compile(
+    r"^(Saturday|Sunday)\s+Ring\s+(\d+)\s+(?:AM|PM)\b.*?[-\s]+([A-Z]{2,4}\d?)\s*$",
+    re.I,
+)
+# Format D (trial 1482 Sunday): "Sunday RIng 1 - Robyn Jones/Cam List - Open Agility (ADO)"
+# Note "RIng" typo in source; matched case-insensitively.
+_RE_HEADER_RING_PAREN_CODE = re.compile(
+    r"^(Saturday|Sunday)\s+R[Ii]ng\s+(\d+)\b.*?\(([A-Z]{2,4})\)\s*$",
+    re.I,
+)
+# Class code → canonical event name. Codes with a trailing digit (AD1/AD2/ADX1)
+# denote separate sessions of the same class on the same day; the digit is
+# preserved in event_name to keep them distinct.
+_CLASS_CODE_TO_NAME = {
+    "AD": "Novice Agility",
+    "ADX": "Excellent Agility",
+    "ADM": "Masters Agility",
+    "ADO": "Open Agility",
+    "JD": "Novice Jumping",
+    "JDX": "Excellent Jumping",
+    "JDM": "Masters Jumping",
+    "JDO": "Open Jumping",
+}
+
+
+def _event_name_from_code(code: str) -> str | None:
+    """Map a class code (e.g. AD1, ADX, JDO) to its canonical event name.
+
+    A trailing session digit (1=AM, 2=PM on Saturday) is kept in the name so
+    that AM/PM runs of the same class don't collide on (event_name, day).
+    """
+    m = re.match(r"^([A-Z]+?)(\d*)$", code)
+    if not m:
+        return None
+    base, num = m.groups()
+    name = _CLASS_CODE_TO_NAME.get(base)
+    if not name:
+        return None
+    return f"{name} ({code})" if num else name
 
 
 def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
     """Parse pre-extracted pages of lines into catalogue entries.
 
-    Handles two TopDog PDF header formats:
+    Handles four TopDog PDF header formats:
       A. "Saturday - Class (CODE) Judge: ..." (day in header)
       B. "Class (CODE) 300 Judge: ..." with separate "Ring N SATURDAY" markers
+      C. "Saturday Ring N AM ... - CODE" (day, ring, and class code in header)
+      D. "Sunday R[Ii]ng N - ... (CODE)" (day, ring, and class code in header)
     """
     results: list[dict] = []
     current_event: str | None = None
     current_header_height: int | None = None
+    current_ring: str | None = None
     current_day = 1
     seen_events: set[str] = set()
+    # Keyed by (event, height, ring) so the same class running in two rings
+    # (or AM/PM sessions distinguished by event_name) gets independent buckets.
     height_groups: dict[tuple, list] = {}
 
     def _flush_and_reset_to_day(new_day: int) -> None:
@@ -107,6 +154,24 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                     _flush_and_reset_to_day(day_num)
                 current_event = event
                 current_header_height = None
+                current_ring = None
+                seen_events.add(event)
+                continue
+
+            # Format C/D headers carry day + ring + class code in one line.
+            header_m = _RE_HEADER_RING_TRAILING_CODE.match(full_text) \
+                or _RE_HEADER_RING_PAREN_CODE.match(full_text)
+            if header_m:
+                day_str, ring_str, code = header_m.groups()
+                event = _event_name_from_code(code)
+                if not event:
+                    continue
+                day_num = 2 if "sun" in day_str.lower() else 1
+                if day_num != current_day:
+                    _flush_and_reset_to_day(day_num)
+                current_event = event
+                current_header_height = None
+                current_ring = ring_str
                 seen_events.add(event)
                 continue
 
@@ -118,6 +183,7 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                     continue
                 current_event = header_m.group(1).strip()
                 current_header_height = height
+                current_ring = None
                 seen_events.add(current_event)
                 continue
 
@@ -142,7 +208,7 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
 
             dog_name, handler_name = _split_dog_handler(line["words"])
 
-            key = (current_event, height_group)
+            key = (current_event, height_group, current_ring)
             if key not in height_groups:
                 height_groups[key] = []
             height_groups[key].append((cat_number, nfc, dog_name, handler_name))
@@ -314,7 +380,13 @@ def _normalize_event_name(s: str) -> str:
 
 
 def _flush_height_groups(results: list, height_groups: dict, day: int) -> None:
-    for (event_name, height_group), entries in height_groups.items():
+    for key, entries in height_groups.items():
+        # Key is either (event, height) (xlsx) or (event, height, ring) (PDF).
+        if len(key) == 3:
+            event_name, height_group, ring_number = key
+        else:
+            event_name, height_group = key
+            ring_number = None
         non_nfc_total = sum(1 for _, nfc, _, _ in entries if not nfc)
         for pos, (cat_number, nfc, dog_name, handler_name) in enumerate(entries, start=1):
             results.append({
@@ -327,6 +399,7 @@ def _flush_height_groups(results: list, height_groups: dict, day: int) -> None:
                 "nfc": nfc,
                 "dog_name": dog_name,
                 "handler_name": handler_name,
+                "ring_number": ring_number,
             })
 
 
