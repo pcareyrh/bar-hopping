@@ -38,9 +38,9 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
     predictions = _build_predictions(session, trial, db, day_blocks=day_blocks)
     flag_conflicts(predictions)
 
-    user_block_keys = {(p["event_name"], p["height_group"]) for p in predictions if not p["pending"]}
+    user_block_keys = {(p["day"], p["event_name"], p["height_group"]) for p in predictions if not p["pending"]}
     for b in day_blocks:
-        b["is_user_block"] = (b["event_name"], b["height_group"]) in user_block_keys
+        b["is_user_block"] = (b["day"], b["event_name"], b["height_group"]) in user_block_keys
         b["setup_str"] = format_predicted_time(b["setup_start"]) if b["setup_start"] else None
         b["first_run_str"] = format_predicted_time(b["first_run"])
         b["last_run_str"] = format_predicted_time(b["last_run"])
@@ -288,6 +288,7 @@ def _build_predictions(
                 "cat_number": entry.cat_number,
                 "ring_number": entry.ring_number,
                 "ring_label": _ring_label(entry.ring_number),
+                "day": None,
                 "run_position": None,
                 "height_group_total": None,
                 "nfc": False,
@@ -342,6 +343,7 @@ def _build_predictions(
             "cat_number": ce.cat_number,
             "ring_number": raw_ring,
             "ring_label": _ring_label(raw_ring),
+            "day": getattr(ce, "day", 1) or 1,
             "run_position": ce.run_position,
             "height_group_total": ce.height_group_total,
             "nfc": ce.nfc,
