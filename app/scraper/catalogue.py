@@ -43,75 +43,114 @@ def parse_catalogue_pdf(data: bytes) -> list[dict]:
         log.warning("pdfplumber not installed — cannot parse PDF catalogue")
         return []
 
+    pages_lines = []
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        for page in pdf.pages:
+            pages_lines.append(_extract_pdf_lines(page))
+    return _parse_pdf_pages(pages_lines)
+
+
+# Format A header (legacy): "Saturday - Novice Jumping (JD) Judge: ..."
+_RE_HEADER_DAY_PREFIX = re.compile(
+    r"^(Saturday|Sunday)\s*-\s*(.+?)\s*\([A-Z]+\)\s*Judge:", re.I
+)
+# Format B header: "Masters Agility (ADM) 300 Judge: ..."
+_RE_HEADER_HEIGHT_INLINE = re.compile(
+    r"^(.+?)\s*\([A-Z]+\)\s+(\d{3})\s+Judge:", re.I
+)
+# Format B day marker: "Ring 1 SATURDAY AM" / "Ring 2 SUNDAY"
+_RE_RING_DAY = re.compile(r"^Ring\s+\d+\s+(SATURDAY|SUNDAY)\b", re.I)
+
+
+def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
+    """Parse pre-extracted pages of lines into catalogue entries.
+
+    Handles two TopDog PDF header formats:
+      A. "Saturday - Class (CODE) Judge: ..." (day in header)
+      B. "Class (CODE) 300 Judge: ..." with separate "Ring N SATURDAY" markers
+    """
     results: list[dict] = []
     current_event: str | None = None
+    current_header_height: int | None = None
     current_day = 1
     seen_events: set[str] = set()
     height_groups: dict[tuple, list] = {}
 
-    with pdfplumber.open(io.BytesIO(data)) as pdf:
-        for page in pdf.pages:
-            lines = _extract_pdf_lines(page)
-            for line in lines:
-                full_text = line["text"]
+    def _flush_and_reset_to_day(new_day: int) -> None:
+        nonlocal height_groups, seen_events, current_day
+        _flush_height_groups(results, height_groups, current_day)
+        height_groups = {}
+        seen_events = set()
+        current_day = new_day
 
-                # Class header: "Saturday - Novice Jumping (JD) Judge: ..."
-                header_m = re.match(
-                    r"^(Saturday|Sunday)\s*-\s*(.+?)\s*\([A-Z]+\)\s*Judge:",
-                    full_text, re.I,
-                )
-                if header_m:
-                    day_str = header_m.group(1).lower()
-                    event = header_m.group(2).strip()
-                    day_num = 2 if "sun" in day_str else 1
-                    # Day boundary: same event reappearing means new day
-                    if event in seen_events and day_num == current_day:
-                        _flush_height_groups(results, height_groups, current_day)
-                        height_groups = {}
-                        seen_events = set()
-                        current_day += 1
-                    elif day_num != current_day:
-                        _flush_height_groups(results, height_groups, current_day)
-                        height_groups = {}
-                        seen_events = set()
-                        current_day = day_num
-                    current_event = event
-                    seen_events.add(event)
-                    continue
+    for lines in pages_lines:
+        for line in lines:
+            full_text = line["text"]
 
-                # Skip column headers and height-change markers
-                if full_text.startswith("Cat#") or "Height Change" in full_text:
-                    continue
+            # Format B day marker — explicit Ring SAT/SUN line.
+            ring_m = _RE_RING_DAY.match(full_text)
+            if ring_m:
+                day_num = 2 if ring_m.group(1).upper().startswith("SUN") else 1
+                if day_num != current_day:
+                    _flush_and_reset_to_day(day_num)
+                continue
 
-                # Entry row: starts with a cat number (digits, possibly ending in NFC)
-                if current_event is None:
-                    continue
-                entry_m = re.match(r"^(\d{2,4})(NFC)?\s", full_text)
-                if not entry_m:
-                    continue
+            # Format A header
+            header_m = _RE_HEADER_DAY_PREFIX.match(full_text)
+            if header_m:
+                day_str = header_m.group(1).lower()
+                event = header_m.group(2).strip()
+                day_num = 2 if "sun" in day_str else 1
+                if event in seen_events and day_num == current_day:
+                    _flush_and_reset_to_day(current_day + 1)
+                elif day_num != current_day:
+                    _flush_and_reset_to_day(day_num)
+                current_event = event
+                current_header_height = None
+                seen_events.add(event)
+                continue
 
-                cat_number = entry_m.group(1) + (entry_m.group(2) or "")
-                nfc = entry_m.group(2) is not None
+            # Format B header — height is part of the header line.
+            header_m = _RE_HEADER_HEIGHT_INLINE.match(full_text)
+            if header_m:
+                height = int(header_m.group(2))
+                if height not in (200, 300, 400, 500, 600):
+                    continue
+                current_event = header_m.group(1).strip()
+                current_header_height = height
+                seen_events.add(current_event)
+                continue
+
+            if full_text.startswith("Cat#") or "Height Change" in full_text:
+                continue
+
+            if current_event is None:
+                continue
+            entry_m = re.match(r"^(\d{2,4})(NFC)?\s", full_text)
+            if not entry_m:
+                continue
+
+            cat_number = entry_m.group(1) + (entry_m.group(2) or "")
+            nfc = entry_m.group(2) is not None
+            if current_header_height is not None:
+                height_group = current_header_height
+            else:
                 cat_digits = int(entry_m.group(1))
                 height_group = (cat_digits // 100) * 100
                 if height_group not in (200, 300, 400, 500, 600):
                     continue
 
-                dog_name, handler_name = _split_dog_handler(line["words"])
+            dog_name, handler_name = _split_dog_handler(line["words"])
 
-                key = (current_event, height_group)
-                if key not in height_groups:
-                    height_groups[key] = []
-                height_groups[key].append((cat_number, nfc, dog_name, handler_name))
+            key = (current_event, height_group)
+            if key not in height_groups:
+                height_groups[key] = []
+            height_groups[key].append((cat_number, nfc, dog_name, handler_name))
 
     _flush_height_groups(results, height_groups, current_day)
     return results
 
 
-# Column boundary constants (from TopDog PDF layout, consistent across pages).
-_DOG_NAME_X = 57.0    # Dog Name column starts here
-_HANDLER_X = 290.0    # Handler column starts here
-_BREED_X = 394.0      # Breed column starts here
 
 
 def _extract_pdf_lines(page) -> list[dict]:
@@ -141,23 +180,19 @@ def _extract_pdf_lines(page) -> list[dict]:
 
 
 def _split_dog_handler(words: list[dict]) -> tuple[str | None, str | None]:
-    """Split word list into dog name and handler using column x-positions."""
-    dog_parts = []
-    handler_parts = []
+    """Split entry-row words into (dog_name, handler_name).
 
-    for w in words:
-        x = w["x0"]
-        if x < _DOG_NAME_X:
-            continue  # cat# column
-        elif x < _HANDLER_X:
-            dog_parts.append(w["text"])
-        elif x < _BREED_X:
-            handler_parts.append(w["text"])
-        # Ignore breed and reg# columns
-
-    dog_name = " ".join(dog_parts).strip() or None
-    handler_name = " ".join(handler_parts).strip() or None
-    return dog_name, handler_name
+    pdfplumber's extract_words with keep_blank_chars groups whitespace within
+    a column into a single word and splits on the larger inter-column gaps.
+    TopDog entry rows therefore yield exactly 4 chunks: cat#, dog, handler,
+    breed. Column x-positions shift between AM/PM sessions and ring pages, so
+    we key off position not x.
+    """
+    if len(words) == 4:
+        dog = words[1]["text"].strip() or None
+        handler = words[2]["text"].strip() or None
+        return dog, handler
+    return None, None
 
 
 async def download_and_parse_catalogue(url: str) -> list[dict]:
