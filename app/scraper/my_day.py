@@ -315,6 +315,7 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
                         "nfc": e["nfc"],
                         "dog_name": e["dog_name"],
                         "handler_name": e["handler_name"],
+                        "ring_number": ring_name,
                     })
 
             class_schedules.append({

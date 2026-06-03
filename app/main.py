@@ -59,6 +59,7 @@ def _migrate() -> None:
             conn, "catalogue_entries", "day", "INTEGER",
             backfill_sql="UPDATE catalogue_entries SET day = 1 WHERE day IS NULL",
         )
+        _add_column_if_missing(conn, "catalogue_entries", "ring_number", "VARCHAR")
 
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_trials_start_date ON trials(start_date)"

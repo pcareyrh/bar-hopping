@@ -83,6 +83,7 @@ class CatalogueEntry(Base):
     nfc = Column(Boolean, default=False)
     dog_name = Column(String, nullable=True)
     handler_name = Column(String, nullable=True)
+    ring_number = Column(String, nullable=True)
 
     trial = relationship("Trial", back_populates="catalogue_entries")
 

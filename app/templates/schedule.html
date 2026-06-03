@@ -44,7 +44,7 @@
     {% endif %}
     {% if b.setup_start %}
     <div class="flex items-center justify-between border border-dashed border-gray-200 rounded-lg px-3 py-1.5 text-xs text-gray-500 bg-gray-50">
-      <p>Setup + walk · {{ b.ring }} ring <span class="text-gray-400">({{ b.setup_mins }}+{{ b.walk_mins }} min)</span></p>
+      <p>Setup + walk · {{ b.ring }}<span class="text-gray-400"> ({{ b.setup_mins }}+{{ b.walk_mins }} min)</span></p>
       <p class="font-mono shrink-0 ml-2">{{ b.setup_str }}<span class="text-gray-400"> – {{ b.first_run_str }}</span></p>
     </div>
     {% endif %}
@@ -57,7 +57,7 @@
           <span class="ml-1 text-xs bg-brand text-white px-1.5 py-0.5 rounded font-medium align-middle">You</span>
           {% endif %}
         </p>
-        <p class="text-xs text-gray-400">{{ b.ring }} ring · {{ b.count }} dog{{ "s" if b.count != 1 else "" }}</p>
+        <p class="text-xs text-gray-400">{{ b.ring }} · {{ b.count }} dog{{ "s" if b.count != 1 else "" }}</p>
       </div>
       <p class="font-mono text-xs text-gray-600 shrink-0 ml-2">{{ b.first_run_str }}<span class="text-gray-400"> – {{ b.last_run_str }}</span></p>
     </div>
