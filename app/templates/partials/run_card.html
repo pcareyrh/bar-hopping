@@ -31,7 +31,7 @@
   <!-- Meta -->
   <div class="mt-1.5 flex flex-wrap gap-2 text-xs text-gray-400">
     {% if p.height_group %}<span>{{ p.height_group }}mm</span>{% endif %}
-    {% if p.ring_number %}<span>Ring {{ p.ring_number }}</span>{% endif %}
+    {% if p.ring_label %}<span>{{ p.ring_label }}</span>{% endif %}
     {% if p.run_position and p.height_group_total %}
     <span>Run {{ p.effective_position }} of {{ p.height_group_total }}</span>
     {% endif %}
