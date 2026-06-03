@@ -293,6 +293,8 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
                 continue
             class_name = cls["class_name"]
             entries = parse_my_day_detail(html)
+            # Normalize ring_name to bare identifier (e.g. "Ring 1" → "1")
+            bare_ring = re.sub(r"^ring\s*", "", ring_name, flags=re.I).strip() or ring_name
 
             # Group by height, preserve in-page order for run_position.
             by_h: dict[int, list[dict]] = {}
@@ -315,11 +317,11 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
                         "nfc": e["nfc"],
                         "dog_name": e["dog_name"],
                         "handler_name": e["handler_name"],
-                        "ring_number": ring_name,
+                        "ring_number": bare_ring,
                     })
 
             class_schedules.append({
-                "ring_number": ring_name,
+                "ring_number": bare_ring,
                 "class_name": class_name,
                 "scheduled_start": start_time if class_idx == 0 else None,
                 "ring_setup_mins": None,
