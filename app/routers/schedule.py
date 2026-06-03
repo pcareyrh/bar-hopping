@@ -85,11 +85,12 @@ def update_override(
     entry.time_per_dog_override = int(time_per_dog_override) if time_per_dog_override.strip() else None
 
     if entry.catalogue_entry and entry.ring_number:
+        normalized_ring = _bare_ring(entry.ring_number)
         cs = db.query(ClassSchedule).filter(
             ClassSchedule.trial_id == trial_id,
-            ClassSchedule.ring_number == entry.ring_number,
             ClassSchedule.class_name == entry.event_name,
-        ).first()
+        ).all()
+        cs = next((c for c in cs if _bare_ring(c.ring_number) == normalized_ring), None)
         if cs:
             if ring_setup_mins.strip():
                 cs.ring_setup_mins = int(ring_setup_mins)
