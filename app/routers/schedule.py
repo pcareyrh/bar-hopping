@@ -118,7 +118,7 @@ def _bare_ring(value: str | None) -> str | None:
         return None
     import re as _re
     bare = _re.sub(r"^ring\s*", "", value.strip(), flags=_re.I).strip()
-    return bare or value.strip()
+    return bare or None
 
 
 def _ring_label(value: str | None) -> str | None:
@@ -137,7 +137,8 @@ def _ring_of(event_name: str, ring_number: str | None = None) -> str:
     """
     if ring_number:
         bare = _bare_ring(ring_number)
-        return f"Ring {bare}"
+        if bare:
+            return f"Ring {bare}"
     n = (event_name or "").lower()
     if "jumping" in n:
         return "Jumping"
