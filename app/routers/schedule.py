@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, Form, Request, HTTPException
@@ -86,11 +87,11 @@ def update_override(
 
     if entry.catalogue_entry and entry.ring_number:
         normalized_ring = _bare_ring(entry.ring_number)
-        cs = db.query(ClassSchedule).filter(
+        cs_list = db.query(ClassSchedule).filter(
             ClassSchedule.trial_id == trial_id,
             ClassSchedule.class_name == entry.event_name,
         ).all()
-        cs = next((c for c in cs if _bare_ring(c.ring_number) == normalized_ring), None)
+        cs = next((c for c in cs_list if _bare_ring(c.ring_number) == normalized_ring), None)
         if cs:
             if ring_setup_mins.strip():
                 cs.ring_setup_mins = int(ring_setup_mins)
@@ -116,8 +117,7 @@ def _bare_ring(value: str | None) -> str | None:
     """
     if not value:
         return None
-    import re as _re
-    bare = _re.sub(r"^ring\s*", "", value.strip(), flags=_re.I).strip()
+    bare = re.sub(r"^ring\s*", "", value.strip(), flags=re.I).strip()
     return bare or None
 
 
