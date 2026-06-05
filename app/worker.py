@@ -92,7 +92,19 @@ def sync_session_job(session_uuid: str) -> None:
                 trial = db.query(Trial).filter(Trial.external_id == ut["external_id"]).first()
                 if not trial:
                     continue
+                seen_entries: set[tuple] = set()
                 for e in ut["entries"]:
+                    dedup_key = (
+                        trial.id,
+                        e.get("dog_name"),
+                        e.get("event_name"),
+                        e.get("cat_number"),
+                        e.get("height_group"),
+                    )
+                    if dedup_key in seen_entries:
+                        log.debug("Skipping duplicate entry: %s", dedup_key)
+                        continue
+                    seen_entries.add(dedup_key)
                     db.add(SessionEntry(
                         session_uuid=session_uuid,
                         trial_id=trial.id,
