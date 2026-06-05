@@ -1,3 +1,4 @@
+import re
 from datetime import date, datetime, time, timedelta
 
 from fastapi import APIRouter, Depends, Form, Request, HTTPException
@@ -26,26 +27,21 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
     session = _get_session(uuid, db)
     trial = _get_trial(trial_id, db)
 
-    has_class_schedules = (
-        db.query(ClassSchedule.id).filter(ClassSchedule.trial_id == trial_id).first() is not None
-    )
     trial_start = trial.start_time or DEFAULT_TRIAL_START
-    day_blocks: list[dict] = []
-    if not has_class_schedules:
-        day_blocks = _compute_catalogue_blocks(
-            trial, db,
-            base_start=trial_start,
-            setup_mins=session.default_setup_mins,
-            walk_mins=session.default_walk_mins,
-            tpd_for_height=session.tpd_for,
-        )
+    day_blocks = _compute_catalogue_blocks(
+        trial, db,
+        base_start=trial_start,
+        setup_mins=session.default_setup_mins,
+        walk_mins=session.default_walk_mins,
+        tpd_for_height=session.tpd_for,
+    )
 
     predictions = _build_predictions(session, trial, db, day_blocks=day_blocks)
     flag_conflicts(predictions)
 
-    user_block_keys = {(p["event_name"], p["height_group"]) for p in predictions if not p["pending"]}
+    user_block_keys = {(p["day"], p["event_name"], p["height_group"]) for p in predictions if not p["pending"]}
     for b in day_blocks:
-        b["is_user_block"] = (b["event_name"], b["height_group"]) in user_block_keys
+        b["is_user_block"] = (b["day"], b["event_name"], b["height_group"]) in user_block_keys
         b["setup_str"] = format_predicted_time(b["setup_start"]) if b["setup_start"] else None
         b["first_run_str"] = format_predicted_time(b["first_run"])
         b["last_run_str"] = format_predicted_time(b["last_run"])
@@ -60,7 +56,7 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
             "day_blocks": day_blocks,
             "trial_start_str": format_predicted_time(
                 datetime.combine(trial.start_date or date.today(), trial_start)
-            ) if not has_class_schedules else None,
+            ),
         },
     )
 
@@ -90,11 +86,12 @@ def update_override(
     entry.time_per_dog_override = int(time_per_dog_override) if time_per_dog_override.strip() else None
 
     if entry.catalogue_entry and entry.ring_number:
-        cs = db.query(ClassSchedule).filter(
+        normalized_ring = _bare_ring(entry.ring_number)
+        cs_list = db.query(ClassSchedule).filter(
             ClassSchedule.trial_id == trial_id,
-            ClassSchedule.ring_number == entry.ring_number,
             ClassSchedule.class_name == entry.event_name,
-        ).first()
+        ).all()
+        cs = next((c for c in cs_list if _bare_ring(c.ring_number) == normalized_ring), None)
         if cs:
             if ring_setup_mins.strip():
                 cs.ring_setup_mins = int(ring_setup_mins)
@@ -113,6 +110,23 @@ def update_override(
     )
 
 
+def _bare_ring(value: str | None) -> str | None:
+    """Normalize a ring_number value to its bare identifier (e.g. "1", "2").
+
+    Handles formats like "Ring 1", "ring 2", "1", etc.
+    """
+    if not value:
+        return None
+    bare = re.sub(r"^ring\s*", "", value.strip(), flags=re.I).strip()
+    return bare or None
+
+
+def _ring_label(value: str | None) -> str | None:
+    """Return a display label like 'Ring 1' from any ring_number format."""
+    bare = _bare_ring(value)
+    return f"Ring {bare}" if bare else None
+
+
 def _ring_of(event_name: str, ring_number: str | None = None) -> str:
     """Classify a class into a ring.
 
@@ -122,7 +136,9 @@ def _ring_of(event_name: str, ring_number: str | None = None) -> str:
     another in parallel.
     """
     if ring_number:
-        return f"Ring {ring_number}"
+        bare = _bare_ring(ring_number)
+        if bare:
+            return f"Ring {bare}"
     n = (event_name or "").lower()
     if "jumping" in n:
         return "Jumping"
@@ -247,19 +263,12 @@ def _build_predictions(
 
     if day_blocks is None:
         # Recompute when called from the override handler — cheap.
-        has_class_schedules = (
-            db.query(ClassSchedule.id).filter(ClassSchedule.trial_id == trial.id).first() is not None
-        )
-        day_blocks = (
-            []
-            if has_class_schedules
-            else _compute_catalogue_blocks(
-                trial, db,
-                base_start=trial.start_time or DEFAULT_TRIAL_START,
-                setup_mins=session.default_setup_mins,
-                walk_mins=session.default_walk_mins,
-                tpd_for_height=session.tpd_for,
-            )
+        day_blocks = _compute_catalogue_blocks(
+            trial, db,
+            base_start=trial.start_time or DEFAULT_TRIAL_START,
+            setup_mins=session.default_setup_mins,
+            walk_mins=session.default_walk_mins,
+            tpd_for_height=session.tpd_for,
         )
     block_starts: dict[tuple[str, int, int], datetime] = {
         (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"] for b in day_blocks
@@ -280,6 +289,8 @@ def _build_predictions(
                 "height_group": entry.height_group,
                 "cat_number": entry.cat_number,
                 "ring_number": entry.ring_number,
+                "ring_label": _ring_label(entry.ring_number),
+                "day": None,
                 "run_position": None,
                 "height_group_total": None,
                 "nfc": False,
@@ -325,13 +336,16 @@ def _build_predictions(
             predicted_start = None
             predicted_start_str = None
 
+        raw_ring = entry.ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None)
         predictions.append({
             "entry_id": entry.id,
             "dog_name": entry.dog_name,
             "event_name": ce.event_name,
             "height_group": ce.height_group,
             "cat_number": ce.cat_number,
-            "ring_number": entry.ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None),
+            "ring_number": raw_ring,
+            "ring_label": _ring_label(raw_ring),
+            "day": getattr(ce, "day", 1) or 1,
             "run_position": ce.run_position,
             "height_group_total": ce.height_group_total,
             "nfc": ce.nfc,
