@@ -243,6 +243,29 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                 trial.scraped_at = datetime.utcnow()
                 db.commit()
                 _resolve_catalogue_links(trial, db)
+
+                # my_day may only cover the current/next day (e.g. Saturday
+                # before the trial starts). If the catalogue PDF has additional
+                # days, supplement with those entries so multi-day trials show
+                # the full schedule.
+                if trial.catalogue_doc_url and not trial.catalogue_doc_url.rstrip("/").endswith("/entries"):
+                    my_day_days = set(e["day"] for e in my_day_payload["catalogue_entries"])
+                    try:
+                        cat_entries = await download_and_parse_catalogue(trial.catalogue_doc_url)
+                        cat_days = set(e["day"] for e in cat_entries)
+                        missing_days = cat_days - my_day_days
+                        if missing_days:
+                            log.info("refresh_trial_docs_job: my_day covered days %s; "
+                                     "catalogue PDF has extra days %s — supplementing",
+                                     sorted(my_day_days), sorted(missing_days))
+                            for e in cat_entries:
+                                if e["day"] in missing_days:
+                                    db.add(CatalogueEntry(trial_id=trial_id, **e))
+                            db.commit()
+                            _resolve_catalogue_links(trial, db)
+                    except Exception as e:
+                        log.warning("refresh_trial_docs_job: catalogue supplement failed: %s", e)
+
                 return
 
             # ----- Legacy fallback path -----
