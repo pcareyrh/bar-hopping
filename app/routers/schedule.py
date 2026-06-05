@@ -280,19 +280,20 @@ def _build_predictions(
                 "height_group": entry.height_group,
                 "cat_number": entry.cat_number,
                 "ring_number": entry.ring_number,
-                "run_position": None,
-                "height_group_total": None,
-                "nfc": False,
-                "predicted_start": None,
-                "predicted_start_str": None,
-                "effective_position": None,
-                "effective_tpd": None,
-                "pending": True,
-                "position_override": entry.position_override,
-                "time_per_dog_override": entry.time_per_dog_override,
-                "conflict": False,
-            })
-            continue
+               "catalogue_entry_id": None,
+               "run_position": None,
+               "height_group_total": None,
+               "nfc": False,
+               "predicted_start": None,
+               "predicted_start_str": None,
+               "effective_position": None,
+               "effective_tpd": None,
+               "pending": True,
+               "position_override": entry.position_override,
+               "time_per_dog_override": entry.time_per_dog_override,
+               "conflict": False,
+           })
+           continue
 
         cs = _match_class_schedule(all_class_schedules, ce.event_name)
 
@@ -332,6 +333,7 @@ def _build_predictions(
             "height_group": ce.height_group,
             "cat_number": ce.cat_number,
             "ring_number": entry.ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None),
+            "catalogue_entry_id": ce.id,
             "run_position": ce.run_position,
             "height_group_total": ce.height_group_total,
             "nfc": ce.nfc,
