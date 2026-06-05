@@ -102,6 +102,7 @@ def sync_session_job(session_uuid: str) -> None:
                         e.get("height_group"),
                     )
                     if dedup_key in seen_entries:
+                        log.debug("Skipping duplicate entry: %s", dedup_key)
                         continue
                     seen_entries.add(dedup_key)
                     db.add(SessionEntry(
