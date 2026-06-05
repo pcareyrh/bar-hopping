@@ -131,8 +131,9 @@ def parse_my_day_index(html: str) -> list[dict]:
 
         if "my-day-ring-row" in classes:
             ring_name_el = el.select_one(".my-day-ring-name")
-            if ring_name_el:
-                ring_name = ring_name_el.get_text(strip=True)
+            ring_text = ring_name_el.get_text(strip=True) if ring_name_el else ""
+            if ring_text:
+                ring_name = ring_text
             elif current is not None:
                 # Fall back to extracting ring number from the session header
                 # (e.g. "Saturday Ring 2 AM - Judge Name")
