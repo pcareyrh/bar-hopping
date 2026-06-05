@@ -73,6 +73,16 @@ _RE_HEADER_RING_PAREN_CODE = re.compile(
     r"^(Saturday|Sunday)\s+R[Ii]ng\s+(\d+)\b.*?\(([A-Z]{2,4})\)\s*$",
     re.I,
 )
+# Format E ring/day header (ADC Pawlympics style):
+#   "SATURDAY - RING 1 - AM Judge Cam List (NZ)"
+#   "SUNDAY - RING 2 - Judges Cam List / Robyn Jones"
+# The class code appears on the NEXT line as a standalone token (e.g. "AD1").
+_RE_HEADER_RING_DAY_SESSION = re.compile(
+    r"^(SATURDAY|SUNDAY)\s*-\s*RING\s+(\d+)\s*-\s*(.+)$",
+    re.I,
+)
+# Standalone class code line (used by Format E as the line after the ring header).
+_RE_STANDALONE_CLASS_CODE = re.compile(r"^([A-Z]{2,4}\d?)\s*$")
 # Class code → canonical event name. Codes with a trailing digit (AD1/AD2/ADX1)
 # denote separate sessions of the same class on the same day; the digit is
 # preserved in event_name to keep them distinct.
@@ -107,11 +117,12 @@ def _event_name_from_code(code: str) -> str | None:
 def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
     """Parse pre-extracted pages of lines into catalogue entries.
 
-    Handles four TopDog PDF header formats:
+    Handles five TopDog PDF header formats:
       A. "Saturday - Class (CODE) Judge: ..." (day in header)
       B. "Class (CODE) 300 Judge: ..." with separate "Ring N SATURDAY" markers
       C. "Saturday Ring N AM ... - CODE" (day, ring, and class code in header)
       D. "Sunday R[Ii]ng N - ... (CODE)" (day, ring, and class code in header)
+      E. "SATURDAY - RING 1 - AM Judge ..." with class code on the NEXT line
     """
     results: list[dict] = []
     current_event: str | None = None
@@ -133,6 +144,28 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
     for lines in pages_lines:
         for line in lines:
             full_text = line["text"]
+
+            # Format E: standalone class code line (e.g. "AD1", "JDM2").
+            # Must be checked early — before entry-row matching would skip it.
+            code_m = _RE_STANDALONE_CLASS_CODE.match(full_text)
+            if code_m:
+                event = _event_name_from_code(code_m.group(1))
+                if event:
+                    current_event = event
+                    current_header_height = None
+                    seen_events.add(event)
+                continue
+
+            # Format E ring/day header — "SATURDAY - RING 1 - AM Judge ..."
+            ring_day_m = _RE_HEADER_RING_DAY_SESSION.match(full_text)
+            if ring_day_m:
+                day_str = ring_day_m.group(1)
+                ring_str = ring_day_m.group(2)
+                day_num = 2 if "sun" in day_str.lower() else 1
+                if day_num != current_day:
+                    _flush_and_reset_to_day(day_num)
+                current_ring = ring_str
+                continue
 
             # Format B day marker — explicit Ring SAT/SUN line.
             ring_m = _RE_RING_DAY.match(full_text)

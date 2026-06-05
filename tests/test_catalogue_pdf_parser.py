@@ -1,4 +1,4 @@
-"""Tests for catalogue PDF parsing — legacy, trial-1358 and trial-1482 formats."""
+"""Tests for catalogue PDF parsing — legacy, trial-1358, trial-1482 and Pawlympics formats."""
 from app.scraper.catalogue import (
     _parse_pdf_pages,
     _split_dog_handler,
@@ -221,3 +221,62 @@ def test_format_a_emits_null_ring_number():
     ]]
     entries = _parse_pdf_pages(pages)
     assert entries[0]["ring_number"] is None
+
+
+def test_format_e_ring_day_header_then_class_code():
+    # Pawlympics format: ring/day header on one line, class code on next line.
+    pages = [[
+        _line([_w("SATURDAY - RING 1 - AM Judge Cam List (NZ)", 50)]),
+        _line([_w("AD1", 268)]),
+        _line([_w("Cat#", 54), _w("Dog Name", 147), _w("Handler", 310), _w("Breed", 443)]),
+        _line([_w("500", 57), _w("Quickstep Meant To Be", 91), _w("Leire Ituarte Perez", 261), _w("Sporting Register", 405)]),
+        _line([_w("501", 57), _w("Rivlin", 91), _w("Cristian hinojosa", 261), _w("Sporting Register", 405)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    assert len(entries) == 2
+    e = entries[0]
+    assert e["event_name"] == "Novice Agility (AD1)"
+    assert e["day"] == 1
+    assert e["ring_number"] == "1"
+    assert e["height_group"] == 500
+    assert e["dog_name"] == "Quickstep Meant To Be"
+    assert e["handler_name"] == "Leire Ituarte Perez"
+    assert e["height_group_total"] == 2
+
+
+def test_format_e_multiple_classes_under_same_ring():
+    # Multiple class codes under one ring/day header (same ring, different events).
+    pages = [[
+        _line([_w("SATURDAY - RING 2 - AM Judge Cassie Crew (VIC)", 50)]),
+        _line([_w("JDM1", 268)]),
+        _line([_w("Cat#", 54), _w("Dog Name", 147), _w("Handler", 310), _w("Breed", 443)]),
+        _line([_w("400", 57), _w("Dog1", 91), _w("Handler1", 261), _w("Breed1", 405)]),
+        _line([_w("JD1", 268)]),
+        _line([_w("Cat#", 54), _w("Dog Name", 147), _w("Handler", 310), _w("Breed", 443)]),
+        _line([_w("300", 57), _w("Dog2", 91), _w("Handler2", 261), _w("Breed2", 405)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    assert len(entries) == 2
+    assert entries[0]["event_name"] == "Masters Jumping (JDM1)"
+    assert entries[0]["ring_number"] == "2"
+    assert entries[0]["height_group"] == 400
+    assert entries[1]["event_name"] == "Novice Jumping (JD1)"
+    assert entries[1]["ring_number"] == "2"
+    assert entries[1]["height_group"] == 300
+
+
+def test_format_e_day_rollover_saturday_to_sunday():
+    # Saturday ring header followed by Sunday ring header flushes day=1 entries.
+    pages = [[
+        _line([_w("SATURDAY - RING 1 - AM Judge Cam List (NZ)", 50)]),
+        _line([_w("AD1", 268)]),
+        _line([_w("500", 57), _w("DogA", 91), _w("HandlerA", 261), _w("Breed", 405)]),
+        _line([_w("SUNDAY - RING 1 - Judges Robyn Jones / Cam List", 50)]),
+        _line([_w("ADO", 268)]),
+        _line([_w("500", 57), _w("DogB", 91), _w("HandlerB", 261), _w("Breed", 405)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    assert [e["day"] for e in entries] == [1, 2]
+    assert entries[0]["event_name"] == "Novice Agility (AD1)"
+    assert entries[1]["event_name"] == "Open Agility"
+
