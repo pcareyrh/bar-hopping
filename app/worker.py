@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import re as _re
 from datetime import datetime
 
 from app.database import SessionLocal
@@ -315,7 +316,6 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
 
 
 def _resolve_catalogue_links(trial: Trial, db) -> None:
-    import re as _re
     # Strip a trailing " (CODE)" / " (CODE1)" — trial 1482's catalogue tags AM/PM
     # session codes onto the event_name to keep them distinct, but the user's
     # /entries page omits the suffix.
@@ -340,15 +340,15 @@ def _resolve_catalogue_links(trial: Trial, db) -> None:
                 continue
             # cat_number is unique within a trial's catalogue; fall back to a
             # cat-only match and verify event names agree after stripping codes.
-            ce = (
-                db.query(CatalogueEntry)
-                .filter(
+            ce = next(
+                (c for c in db.query(CatalogueEntry).filter(
                     CatalogueEntry.trial_id == trial.id,
                     CatalogueEntry.cat_number == se.cat_number,
-                )
-                .first()
+                ).order_by(CatalogueEntry.id).all()
+                 if _norm(c.event_name) == _norm(se.event_name)),
+                None,
             )
-            if ce and _norm(ce.event_name) == _norm(se.event_name):
+            if ce:
                 se.catalogue_entry_id = ce.id
                 continue
 
