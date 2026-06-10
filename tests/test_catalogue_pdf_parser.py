@@ -280,3 +280,158 @@ def test_format_e_day_rollover_saturday_to_sunday():
     assert entries[0]["event_name"] == "Novice Agility (AD1)"
     assert entries[1]["event_name"] == "Open Agility"
 
+
+# --- Format F: Nationals 2026 ---
+
+def test_format_f_basic_entry():
+    # Nationals format: standalone RING header, uppercase event header, handler at col 3.
+    pages = [[
+        _line([_w("DAY 2", 48)]),
+        _line([_w("RING 1", 51)]),
+        _line([_w("NOVICE SNOOKER (SD) - 600 WALKING GROUP 1", 120)]),
+        _line([_w("JUDGE: Karen Winzar (QLD)", 138)]),
+        _line([_w("CAT# DOG BREED HANDLER", 156)]),
+        _line([_w("600", 57), _w("Artizan Rockstar Royalty", 91), _w("Poodle (Standard)", 261), _w("Dylan Fox", 405)]),
+        _line([_w("601", 57), _w("WOW JD. N.SPRD", 91), _w("Associate Register", 261), _w("Alexandria Tan", 405)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    assert len(entries) == 2
+    e = entries[0]
+    assert e["event_name"] == "Novice Snooker"
+    assert e["day"] == 2
+    assert e["ring_number"] == "1"
+    assert e["height_group"] == 600
+    assert e["dog_name"] == "Artizan Rockstar Royalty"
+    assert e["handler_name"] == "Dylan Fox"
+    assert e["height_group_total"] == 2
+
+
+def test_format_f_day_rollover():
+    # DAY 2 entries flushed and attributed to day=2; DAY 3 entries get day=3.
+    pages = [
+        [
+            _line([_w("DAY 2", 48)]),
+            _line([_w("RING 1", 51)]),
+            _line([_w("NOVICE SNOOKER (SD) - 600 WALKING GROUP 1", 120)]),
+            _line([_w("CAT# DOG BREED HANDLER", 156)]),
+            _line([_w("600", 57), _w("DogA", 91), _w("Breed", 261), _w("HandlerA", 405)]),
+        ],
+        [
+            _line([_w("DAY 3", 48)]),
+            _line([_w("RING 1", 51)]),
+            _line([_w("NOVICE GAMBLERS (GD) - 600 WALKING GROUP 1", 120)]),
+            _line([_w("CAT# DOG BREED HANDLER", 156)]),
+            _line([_w("600", 57), _w("DogB", 91), _w("Breed", 261), _w("HandlerB", 405)]),
+        ],
+    ]
+    entries = _parse_pdf_pages(pages)
+    assert [e["day"] for e in entries] == [2, 3]
+    assert entries[0]["event_name"] == "Novice Snooker"
+    assert entries[1]["event_name"] == "Novice Gamblers"
+
+
+def test_format_f_handler_at_column_3():
+    # Verify handler is index 3 (not index 2 like other formats).
+    pages = [[
+        _line([_w("RING 7", 51)]),
+        _line([_w("EXCELLENT AGILITY (ADX1) - 400 continued WALKING GROUP 1", 120)]),
+        _line([_w("CAT# DOG BREED HANDLER", 156)]),
+        _line([_w("432", 57), _w("Hazenfire Otter This World AD. JDX.", 91), _w("Australian Shepherd", 261), _w("Kate Morgan", 405)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    assert len(entries) == 1
+    assert entries[0]["event_name"] == "Excellent Agility (ADX1)"
+    assert entries[0]["ring_number"] == "7"
+    assert entries[0]["dog_name"] == "Hazenfire Otter This World AD. JDX."
+    assert entries[0]["handler_name"] == "Kate Morgan"
+
+
+def test_format_f_breed_on_separate_line():
+    # When a long breed name wraps to its own line the entry row has 3 words:
+    # cat#, dog, handler — breed line is ignored for name extraction.
+    pages = [[
+        _line([_w("RING 1", 51)]),
+        _line([_w("NOVICE SNOOKER (SD) - 200 WALKING GROUP 1", 120)]),
+        _line([_w("CAT# DOG BREED HANDLER", 156)]),
+        _line([_w("Cavalier King Charles", 261)]),
+        _line([_w("212", 57), _w("Kabob Sweet Cherry Pie", 91), _w("Kathy Lepelaar", 261)]),
+        _line([_w("Spaniel", 261)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    assert len(entries) == 1
+    assert entries[0]["cat_number"] == "212"
+    assert entries[0]["dog_name"] == "Kabob Sweet Cherry Pie"
+    assert entries[0]["handler_name"] == "Kathy Lepelaar"
+    assert entries[0]["height_group"] == 200
+
+
+def test_format_f_nationals_event_codes():
+    # All new Nationals codes map to the correct canonical event names.
+    pages = [[
+        _line([_w("RING 1", 51)]),
+        _line([_w("NOVICE GAMBLERS (GD) - 400 WALKING GROUP 1", 120)]),
+        _line([_w("CAT# DOG BREED HANDLER", 156)]),
+        _line([_w("400", 57), _w("DogA", 91), _w("Border Collie", 261), _w("HandlerA", 405)]),
+        _line([_w("MASTERS SNOOKER (SDM) - 400 WALKING GROUP 2", 200)]),
+        _line([_w("CAT# DOG BREED HANDLER", 220)]),
+        _line([_w("401", 57), _w("DogB", 91), _w("Border Collie", 261), _w("HandlerB", 405)]),
+        _line([_w("EXCELLENT STRATEGIC PAIRS (SPDX) - 400 WALKING GROUP 1", 300)]),
+        _line([_w("CAT# DOG BREED HANDLER", 320)]),
+        _line([_w("402", 57), _w("DogC", 91), _w("Border Collie", 261), _w("HandlerC", 405)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    by_name = {e["event_name"]: e for e in entries}
+    assert by_name["Novice Gamblers"]["handler_name"] == "HandlerA"
+    assert by_name["Masters Snooker"]["handler_name"] == "HandlerB"
+    assert by_name["Excellent Strategic Pairs"]["handler_name"] == "HandlerC"
+
+
+def test_format_f_no_space_before_height():
+    # "NOVICE GAMBLERS (GD) -400" — no space between dash and height digit.
+    pages = [[
+        _line([_w("RING 1", 51)]),
+        _line([_w("NOVICE GAMBLERS (GD) -400 continued WALKING GROUP 1", 120)]),
+        _line([_w("CAT# DOG BREED HANDLER", 156)]),
+        _line([_w("400", 57), _w("DogA", 91), _w("Border Collie", 261), _w("HandlerA", 405)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    assert len(entries) == 1
+    assert entries[0]["event_name"] == "Novice Gamblers"
+    assert entries[0]["height_group"] == 400
+
+
+def test_format_f_four_digit_cat_number():
+    # Late entries use 4-digit cat numbers (e.g. 4029); height from header, not digits.
+    pages = [[
+        _line([_w("RING 7", 51)]),
+        _line([_w("EXCELLENT AGILITY (ADX1) - 400 continued WALKING GROUP 1", 120)]),
+        _line([_w("CAT# DOG BREED HANDLER", 156)]),
+        _line([_w("4029", 57), _w("Guirmere Trifecta", 91), _w("Border Collie", 261), _w("Tricia Williams", 405)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    assert len(entries) == 1
+    assert entries[0]["cat_number"] == "4029"
+    assert entries[0]["height_group"] == 400
+    assert entries[0]["handler_name"] == "Tricia Williams"
+
+
+def test_format_f_multiple_rings_same_day():
+    # Multiple rings on the same day maintain independent height-group buckets.
+    pages = [[
+        _line([_w("DAY 2", 48)]),
+        _line([_w("RING 1", 51)]),
+        _line([_w("NOVICE SNOOKER (SD) - 200 WALKING GROUP 1", 120)]),
+        _line([_w("CAT# DOG BREED HANDLER", 156)]),
+        _line([_w("200", 57), _w("Dog1", 91), _w("Breed", 261), _w("Handler1", 405)]),
+        _line([_w("RING 2", 51)]),
+        _line([_w("NOVICE JUMPING (JD1) - 400 WALKING GROUP 1", 120)]),
+        _line([_w("CAT# DOG BREED HANDLER", 156)]),
+        _line([_w("400", 57), _w("Dog2", 91), _w("Breed", 261), _w("Handler2", 405)]),
+    ]]
+    entries = _parse_pdf_pages(pages)
+    assert len(entries) == 2
+    snooker = next(e for e in entries if "Snooker" in e["event_name"])
+    jumping = next(e for e in entries if "Jumping" in e["event_name"])
+    assert snooker["ring_number"] == "1"
+    assert jumping["ring_number"] == "2"
+    assert snooker["day"] == jumping["day"] == 2
