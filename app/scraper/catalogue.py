@@ -83,6 +83,28 @@ _RE_HEADER_RING_DAY_SESSION = re.compile(
 )
 # Standalone class code line (used by Format E as the line after the ring header).
 _RE_STANDALONE_CLASS_CODE = re.compile(r"^([A-Z]{2,4}\d?)\s*$")
+# Format F (Nationals 2026): standalone "RING N" ring header (all caps, no day suffix).
+_RE_HEADER_NATIONALS_RING = re.compile(r"^RING\s+(\d+)\s*$")
+# Format F day marker: standalone "DAY N" line (appears on running-order pages).
+_RE_HEADER_NATIONALS_DAY = re.compile(r"^DAY\s+(\d+)\s*$")
+# Format F event header: all-caps event name, code in parens, height after dash.
+#   "NOVICE SNOOKER (SD) - 600 WALKING GROUP 1"
+#   "EXCELLENT AGILITY (ADX1) - 400 continued WALKING GROUP 1"
+#   "NOVICE GAMBLERS (GD) -400 continued"   (no space before height)
+# The height is always in the header; cat-number digits are NOT used for height lookup.
+_RE_HEADER_NATIONALS_EVENT = re.compile(
+    r"^([A-Z][A-Z ]*)\(([A-Z]+\d*)\)\s*-\s*(\d{3})\b"
+)
+# Format F heat event header: JDO/ADO use heats + coloured groups instead of
+# a height-per-header layout.
+#   "OPEN JUMPING (JDO) - HEAT 1   PINK GROUP"
+#   "OPEN AGILITY (ADO) -HEAT 1   RAINBOWGROUP"
+# Height is provided by "NNN HEIGHT" sub-headers within each heat section.
+_RE_HEADER_NATIONALS_HEAT = re.compile(
+    r"^([A-Z][A-Z ]*)\(([A-Z]+)\)\s*-\s*HEAT\s+(\d+)"
+)
+# Format F height sub-header within a heat section: "400 HEIGHT", "500 HEIGHT continued"
+_RE_HEADER_NATIONALS_HEIGHT = re.compile(r"^(\d{3})\s+HEIGHT\b")
 # Class code → canonical event name. Codes with a trailing digit (AD1/AD2/ADX1)
 # denote separate sessions of the same class on the same day; the digit is
 # preserved in event_name to keep them distinct.
@@ -95,6 +117,16 @@ _CLASS_CODE_TO_NAME = {
     "JDX": "Excellent Jumping",
     "JDM": "Masters Jumping",
     "JDO": "Open Jumping",
+    # Nationals-only classes
+    "GD": "Novice Gamblers",
+    "GDX": "Excellent Gamblers",
+    "GDM": "Masters Gamblers",
+    "SD": "Novice Snooker",
+    "SDX": "Excellent Snooker",
+    "SDM": "Masters Snooker",
+    "SPD": "Novice Strategic Pairs",
+    "SPDX": "Excellent Strategic Pairs",
+    "SPDM": "Masters Strategic Pairs",
 }
 
 
@@ -130,6 +162,7 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
     current_ring: str | None = None
     current_day = 1
     seen_events: set[str] = set()
+    is_nationals_format = False
     # Keyed by (event, height, ring) so the same class running in two rings
     # (or AM/PM sessions distinguished by event_name) gets independent buckets.
     height_groups: dict[tuple, list] = {}
@@ -145,10 +178,26 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
         for line in lines:
             full_text = line["text"]
 
+            # Format F day marker (Nationals) — "DAY 2", "DAY 3" etc. on
+            # running-order pages that precede each day's entry pages.
+            nationals_day_m = _RE_HEADER_NATIONALS_DAY.match(full_text)
+            if nationals_day_m:
+                day_num = int(nationals_day_m.group(1))
+                if day_num != current_day:
+                    _flush_and_reset_to_day(day_num)
+                # Reset stale event state so the first unrecognised header on
+                # the new day doesn't inherit the previous day's event.
+                current_event = None
+                current_header_height = None
+                is_nationals_format = True
+                continue
+
             # Format E: standalone class code line (e.g. "AD1", "JDM2").
             # Must be checked early — before entry-row matching would skip it.
+            # Guard on current_ring to avoid false positives from isolated code
+            # tokens on non-entry pages (e.g. "JDX" in team schedule tables).
             code_m = _RE_STANDALONE_CLASS_CODE.match(full_text)
-            if code_m:
+            if code_m and current_ring is not None:
                 event = _event_name_from_code(code_m.group(1))
                 if event:
                     current_event = event
@@ -174,6 +223,13 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                 day_num = 2 if ring_m.group(2).upper().startswith("SUN") else 1
                 if day_num != current_day:
                     _flush_and_reset_to_day(day_num)
+                continue
+
+            # Format F ring header (Nationals) — standalone "RING N" (all caps).
+            nationals_ring_m = _RE_HEADER_NATIONALS_RING.match(full_text)
+            if nationals_ring_m:
+                current_ring = nationals_ring_m.group(1)
+                is_nationals_format = True
                 continue
 
             # Format A header
@@ -209,6 +265,39 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                 seen_events.add(event)
                 continue
 
+            # Format F event header (Nationals) — "UPPERCASE EVENT (CODE) - HEIGHT".
+            # Height always comes from the header; cat digits are not used.
+            nationals_event_m = _RE_HEADER_NATIONALS_EVENT.match(full_text)
+            if nationals_event_m:
+                event_text, code, height_str = nationals_event_m.groups()
+                height = int(height_str)
+                if height not in (200, 300, 400, 500, 600):
+                    continue
+                event = _event_name_from_code(code)
+                if event is None:
+                    event = event_text.strip().title()
+                current_event = event
+                current_header_height = height
+                seen_events.add(event)
+                is_nationals_format = True
+                continue
+
+            # Format F heat event header (Nationals JDO/ADO):
+            #   "OPEN JUMPING (JDO) - HEAT 1  PINK GROUP"
+            # Heat number is appended to the code so HEAT 1/2/3 get distinct buckets.
+            # Height is NOT in this header — it comes from "NNN HEIGHT" sub-headers.
+            nationals_heat_m = _RE_HEADER_NATIONALS_HEAT.match(full_text)
+            if nationals_heat_m:
+                event_text, code, heat_str = nationals_heat_m.groups()
+                event = _event_name_from_code(code + heat_str)
+                if event is None:
+                    event = f"{event_text.strip().title()} (Heat {heat_str})"
+                current_event = event
+                current_header_height = None  # set by subsequent NNN HEIGHT lines
+                seen_events.add(event)
+                is_nationals_format = True
+                continue
+
             # Format B header — height is part of the header line.
             header_m = _RE_HEADER_HEIGHT_INLINE.match(full_text)
             if header_m:
@@ -222,6 +311,14 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                 continue
 
             if full_text.startswith("Cat#") or "Height Change" in full_text:
+                continue
+
+            # Format F height sub-header within a heat section: "400 HEIGHT", "500 HEIGHT continued"
+            nationals_height_m = _RE_HEADER_NATIONALS_HEIGHT.match(full_text)
+            if nationals_height_m:
+                height = int(nationals_height_m.group(1))
+                if height in (200, 300, 400, 500, 600):
+                    current_header_height = height
                 continue
 
             if current_event is None:
@@ -240,7 +337,11 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                 if height_group not in (200, 300, 400, 500, 600):
                     continue
 
-            dog_name, handler_name = _split_dog_handler(line["words"])
+            dog_name, handler_name = (
+                _split_dog_handler_nationals(line["words"])
+                if is_nationals_format
+                else _split_dog_handler(line["words"])
+            )
 
             key = (current_event, height_group, current_ring)
             if key not in height_groups:
@@ -292,6 +393,19 @@ def _split_dog_handler(words: list[dict]) -> tuple[str | None, str | None]:
         dog = words[1]["text"].strip() or None
         handler = words[2]["text"].strip() or None
         return dog, handler
+    return None, None
+
+
+def _split_dog_handler_nationals(words: list[dict]) -> tuple[str | None, str | None]:
+    """Format F (Nationals): columns are cat#, dog, breed, handler (indices 0-3).
+
+    When breed wraps to a separate line pdfplumber yields a 3-word row:
+    cat#, dog, handler — handled by the len==3 branch.
+    """
+    if len(words) == 4:
+        return words[1]["text"].strip() or None, words[3]["text"].strip() or None
+    if len(words) == 3:
+        return words[1]["text"].strip() or None, words[2]["text"].strip() or None
     return None, None
 
 
