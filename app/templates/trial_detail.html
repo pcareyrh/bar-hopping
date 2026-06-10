@@ -28,6 +28,12 @@
         Refresh docs
       </button>
     </form>
+    <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/upload-catalogue" enctype="multipart/form-data">
+      <label class="text-xs text-gray-400 hover:text-gray-600 underline cursor-pointer">
+        Upload catalogue
+        <input type="file" name="file" accept=".xlsx,.pdf" class="hidden" onchange="this.form.submit()">
+      </label>
+    </form>
   </div>
 </div>
 
@@ -35,6 +41,12 @@
 <meta http-equiv="refresh" content="8;url=/s/{{ uuid }}/trials/{{ trial.id }}">
 <div class="bg-blue-50 border border-blue-200 text-blue-700 rounded-lg px-4 py-3 mb-4 text-sm">
   Document refresh in progress. Page reloads automatically in ~8 seconds.
+</div>
+{% endif %}
+
+{% if upload_error %}
+<div class="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 mb-4 text-sm">
+  Could not parse the uploaded file — no entries found. Check the file is a valid TopDog catalogue (.xlsx or .pdf).
 </div>
 {% endif %}
 

@@ -59,7 +59,7 @@ _RE_HEADER_HEIGHT_INLINE = re.compile(
     r"^(.+?)\s*\([A-Z]+\)\s+(\d{3})\s+Judge:", re.I
 )
 # Format B day marker: "Ring 1 SATURDAY AM" / "Ring 2 SUNDAY"
-_RE_RING_DAY = re.compile(r"^Ring\s+\d+\s+(SATURDAY|SUNDAY)\b", re.I)
+_RE_RING_DAY = re.compile(r"^Ring\s+(\d+)\s+(SATURDAY|SUNDAY)\b", re.I)
 # Format C (trial 1482 Saturday): "Saturday Ring 1 AM -Cam List - Novice  Judge: Cam List - AD1"
 # pdfplumber word extraction can corrupt the "Judge:" segment ("ExcellenJu  dge"), so we
 # anchor on day + ring at the start and the class code at the end.
@@ -137,7 +137,8 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
             # Format B day marker — explicit Ring SAT/SUN line.
             ring_m = _RE_RING_DAY.match(full_text)
             if ring_m:
-                day_num = 2 if ring_m.group(1).upper().startswith("SUN") else 1
+                current_ring = ring_m.group(1)
+                day_num = 2 if ring_m.group(2).upper().startswith("SUN") else 1
                 if day_num != current_day:
                     _flush_and_reset_to_day(day_num)
                 continue
@@ -183,7 +184,7 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                     continue
                 current_event = header_m.group(1).strip()
                 current_header_height = height
-                current_ring = None
+                # Preserve current_ring set by the preceding Ring N SAT/SUN marker.
                 seen_events.add(current_event)
                 continue
 
