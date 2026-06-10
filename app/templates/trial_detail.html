@@ -29,9 +29,14 @@
       </button>
     </form>
     <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/upload-catalogue" enctype="multipart/form-data">
-      <label class="text-xs text-gray-400 hover:text-gray-600 underline cursor-pointer">
+      <label
+        for="catalogue-file"
+        class="text-xs text-gray-400 hover:text-gray-600 underline cursor-pointer"
+        tabindex="0"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();document.getElementById('catalogue-file').click()}"
+      >
         Upload catalogue
-        <input type="file" name="file" accept=".xlsx,.pdf" class="hidden" onchange="this.form.submit()">
+        <input type="file" id="catalogue-file" name="file" accept=".xlsx,.pdf" class="sr-only" tabindex="-1" onchange="this.form.submit()">
       </label>
     </form>
   </div>

@@ -104,10 +104,19 @@ async def upload_catalogue(
 
     from app.scraper.catalogue import parse_catalogue_pdf, parse_catalogue_xlsx
 
-    if "pdf" in content_type or filename.endswith(".pdf") or data[:5] == b"%PDF-":
-        entries = parse_catalogue_pdf(data)
-    else:
-        entries = parse_catalogue_xlsx(io.BytesIO(data))
+    try:
+        if not data:
+            entries = []
+        elif "pdf" in content_type or filename.endswith(".pdf") or data[:5] == b"%PDF-":
+            entries = parse_catalogue_pdf(data)
+        else:
+            entries = parse_catalogue_xlsx(io.BytesIO(data))
+    except Exception:
+        log.warning("upload_catalogue: parse failed for %s (trial %s)", filename, trial.external_id, exc_info=True)
+        return RedirectResponse(
+            url=f"/s/{uuid}/trials/{trial_id}?upload_error=1",
+            status_code=303,
+        )
 
     if not entries:
         log.warning("upload_catalogue: 0 entries parsed from %s for trial %s", filename, trial.external_id)
@@ -118,15 +127,19 @@ async def upload_catalogue(
 
     from app.worker import _resolve_catalogue_links
 
-    db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
-        {"catalogue_entry_id": None}, synchronize_session=False
-    )
-    db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
-    for e in entries:
-        db.add(CatalogueEntry(trial_id=trial_id, **e))
-    db.commit()
-    log.info("upload_catalogue: %d entries stored for trial %s", len(entries), trial.external_id)
-    _resolve_catalogue_links(trial, db)
+    try:
+        db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
+            {"catalogue_entry_id": None}, synchronize_session=False
+        )
+        db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
+        for e in entries:
+            db.add(CatalogueEntry(trial_id=trial_id, **e))
+        _resolve_catalogue_links(trial, db)
+        db.commit()
+        log.info("upload_catalogue: %d entries stored for trial %s", len(entries), trial.external_id)
+    except Exception:
+        db.rollback()
+        raise
 
     return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}", status_code=303)
 
