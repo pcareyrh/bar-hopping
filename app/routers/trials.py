@@ -1,4 +1,3 @@
-import io
 import logging
 
 from fastapi import APIRouter, Depends, File, Request, HTTPException, UploadFile
@@ -94,54 +93,28 @@ async def upload_catalogue(
     db: DBSession = Depends(get_db),
 ):
     _get_session(uuid, db)
-    trial = db.query(Trial).filter(Trial.id == trial_id).first()
-    if not trial:
+    if not db.query(Trial).filter(Trial.id == trial_id).first():
         raise HTTPException(status_code=404, detail="Trial not found")
 
     data = await file.read()
-    filename = (file.filename or "").lower()
-    content_type = file.content_type or ""
-
-    from app.scraper.catalogue import parse_catalogue_pdf, parse_catalogue_xlsx
+    if not data:
+        return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}?upload_error=1", status_code=303)
 
     try:
-        if not data:
-            entries = []
-        elif "pdf" in content_type or filename.endswith(".pdf") or data[:5] == b"%PDF-":
-            entries = parse_catalogue_pdf(data)
-        else:
-            entries = parse_catalogue_xlsx(io.BytesIO(data))
+        from app.queue import get_queue
+        job = get_queue().enqueue(
+            "app.worker.upload_catalogue_job",
+            trial_id,
+            data,
+            file.content_type or "",
+            job_timeout=300,
+        )
+        log.info("upload_catalogue enqueued: trial_id=%s job=%s", trial_id, job.id)
     except Exception:
-        log.warning("upload_catalogue: parse failed for %s (trial %s)", filename, trial.external_id, exc_info=True)
-        return RedirectResponse(
-            url=f"/s/{uuid}/trials/{trial_id}?upload_error=1",
-            status_code=303,
-        )
+        log.warning("Failed to enqueue app.worker.upload_catalogue_job: trial_id=%s", trial_id, exc_info=True)
+        return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}?upload_error=1", status_code=303)
 
-    if not entries:
-        log.warning("upload_catalogue: 0 entries parsed from %s for trial %s", filename, trial.external_id)
-        return RedirectResponse(
-            url=f"/s/{uuid}/trials/{trial_id}?upload_error=1",
-            status_code=303,
-        )
-
-    from app.worker import _resolve_catalogue_links
-
-    try:
-        db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
-            {"catalogue_entry_id": None}, synchronize_session=False
-        )
-        db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
-        for e in entries:
-            db.add(CatalogueEntry(trial_id=trial_id, **e))
-        _resolve_catalogue_links(trial, db)
-        db.commit()
-        log.info("upload_catalogue: %d entries stored for trial %s", len(entries), trial.external_id)
-    except Exception:
-        db.rollback()
-        raise
-
-    return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}", status_code=303)
+    return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}?refreshing=1", status_code=303)
 
 
 def _get_session(uuid: str, db: DBSession) -> Session:

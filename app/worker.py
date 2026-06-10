@@ -339,6 +339,46 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
     asyncio.run(_run())
 
 
+def upload_catalogue_job(trial_id: int, data: bytes, content_type: str) -> None:
+    import io
+    from app.scraper.catalogue import parse_catalogue_pdf, parse_catalogue_xlsx
+
+    db = SessionLocal()
+    try:
+        trial = db.query(Trial).filter(Trial.id == trial_id).first()
+        if not trial:
+            log.warning("upload_catalogue_job: trial %d not found", trial_id)
+            return
+
+        try:
+            if "pdf" in content_type or data[:5] == b"%PDF-":
+                entries = parse_catalogue_pdf(data)
+            else:
+                entries = parse_catalogue_xlsx(io.BytesIO(data))
+        except Exception:
+            log.warning("upload_catalogue_job: parse failed for trial %s", trial.external_id, exc_info=True)
+            return
+
+        if not entries:
+            log.warning("upload_catalogue_job: 0 entries parsed for trial %s", trial.external_id)
+            return
+
+        db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
+            {"catalogue_entry_id": None}, synchronize_session=False
+        )
+        db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
+        for e in entries:
+            db.add(CatalogueEntry(trial_id=trial_id, **e))
+        _resolve_catalogue_links(trial, db)
+        db.commit()
+        log.info("upload_catalogue_job: %d entries stored for trial %s", len(entries), trial.external_id)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def _resolve_catalogue_links(trial: Trial, db) -> None:
     # Strip a trailing " (CODE)" / " (CODE1)" — trial 1482's catalogue tags AM/PM
     # session codes onto the event_name to keep them distinct, but the user's
