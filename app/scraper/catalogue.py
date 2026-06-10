@@ -217,6 +217,7 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                     continue
                 current_event = header_m.group(1).strip()
                 current_header_height = height
+                # Preserve current_ring set by the preceding Ring N SAT/SUN marker.
                 seen_events.add(current_event)
                 continue
 
