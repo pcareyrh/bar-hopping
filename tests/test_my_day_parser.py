@@ -131,3 +131,34 @@ class TestParseMyDayDetail:
 
     def test_empty_html_returns_empty_list(self):
         assert parse_my_day_detail("<html><body></body></html>") == []
+
+
+# ---------------------------------------------------------------------------
+# parse_my_day_index — no-ring fallback (ring in header, no .my-day-ring-name)
+# ---------------------------------------------------------------------------
+
+class TestParseMyDayIndexNoRing:
+    """When .my-day-ring-name is absent, ring should be inferred from header."""
+
+    def setup_method(self):
+        self.sessions = parse_my_day_index(load("my_day_index_no_ring.html"))
+
+    def test_returns_two_sessions(self):
+        assert len(self.sessions) == 2
+
+    def test_ring1_from_header(self):
+        assert self.sessions[0]["rings"][0]["ring_name"] == "Ring 1"
+
+    def test_ring2_from_header(self):
+        assert self.sessions[1]["rings"][0]["ring_name"] == "Ring 2"
+
+    def test_ring1_classes(self):
+        classes = self.sessions[0]["rings"][0]["classes"]
+        assert len(classes) == 2
+        assert classes[0]["class_name"] == "Novice Agility"
+        assert classes[1]["class_name"] == "Masters Agility"
+
+    def test_ring2_class_is_mine(self):
+        cls = self.sessions[1]["rings"][0]["classes"][0]
+        assert cls["class_name"] == "Masters Jumping"
+        assert cls["is_mine"] is True

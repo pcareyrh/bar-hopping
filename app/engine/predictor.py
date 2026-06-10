@@ -66,14 +66,23 @@ def format_predicted_time(dt: datetime) -> str:
 
 
 def flag_conflicts(predictions: list[dict], buffer_mins: int = 5) -> list[dict]:
-    """Mark entries whose predicted times overlap within buffer_mins of another entry."""
+    """Mark entries whose predicted times overlap within buffer_mins of another entry.
+
+    Entries sharing the same catalogue_entry_id (i.e. duplicates of the same
+    dog in the same class) are not considered conflicts with each other.
+    """
     buffer = timedelta(minutes=buffer_mins)
     for i, a in enumerate(predictions):
         a["conflict"] = False
         if a["predicted_start"] is None:
             continue
+        a_cat_id = a.get("catalogue_entry_id")
         for j, b in enumerate(predictions):
             if i == j or b["predicted_start"] is None:
+                continue
+            # Skip duplicate entries for the same catalogue entry.
+            b_cat_id = b.get("catalogue_entry_id")
+            if a_cat_id and b_cat_id and a_cat_id == b_cat_id:
                 continue
             diff = abs(a["predicted_start"] - b["predicted_start"])
             if diff <= buffer:

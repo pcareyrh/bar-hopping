@@ -39,6 +39,7 @@ _DAY_LABEL_RE = re.compile(r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturda
 _TIME_PAREN_RE = re.compile(r"\(\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*\)", re.I)
 _HEIGHT_RE = re.compile(r"(200|300|400|500|600)")
 _CLASS_HREF_RE = re.compile(r"/trials/(\d+)/my_day/(\d+)/(\d+)")
+_RING_NUM_RE = re.compile(r"\bRing\s*(\d+)\b", re.I)
 
 
 class MyDayUnavailable(Exception):
@@ -130,7 +131,16 @@ def parse_my_day_index(html: str) -> list[dict]:
 
         if "my-day-ring-row" in classes:
             ring_name_el = el.select_one(".my-day-ring-name")
-            ring_name = ring_name_el.get_text(strip=True) if ring_name_el else "Ring 1"
+            ring_text = ring_name_el.get_text(strip=True) if ring_name_el else ""
+            if ring_text:
+                ring_name = ring_text
+            elif current is not None:
+                # Fall back to extracting ring number from the session header
+                # (e.g. "Saturday Ring 2 AM - Judge Name")
+                rm_header = _RING_NUM_RE.search(current["day_label"])
+                ring_name = f"Ring {rm_header.group(1)}" if rm_header else "Ring 1"
+            else:
+                ring_name = "Ring 1"
             # Determine ring_id from the first badge href in this row.
             first_badge = el.select_one("a.my-day-class-badge[href]")
             ring_id = None
@@ -292,7 +302,14 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
             if html is None:
                 continue
             class_name = cls["class_name"]
+            # Normalize ring_name to just the numeric part (e.g. "Ring 2" -> "2")
+            # for storage in ring_number fields. Other consumers (like _ring_of)
+            # expect a plain digit and prepend "Ring " themselves.
+            rn_match = _RING_NUM_RE.search(ring_name)
+            ring_number = rn_match.group(1) if rn_match else ring_name
             entries = parse_my_day_detail(html)
+            # Normalize ring_name to bare identifier (e.g. "Ring 1" → "1")
+            bare_ring = re.sub(r"^ring\s*", "", ring_name, flags=re.I).strip() or ring_name
 
             # Group by height, preserve in-page order for run_position.
             by_h: dict[int, list[dict]] = {}
@@ -315,11 +332,11 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
                         "nfc": e["nfc"],
                         "dog_name": e["dog_name"],
                         "handler_name": e["handler_name"],
-                        "ring_number": ring_name,
+                        "ring_number": bare_ring,
                     })
 
             class_schedules.append({
-                "ring_number": ring_name,
+                "ring_number": bare_ring,
                 "class_name": class_name,
                 "scheduled_start": start_time if class_idx == 0 else None,
                 "ring_setup_mins": None,

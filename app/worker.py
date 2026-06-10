@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import re as _re
 from datetime import datetime
 
 from app.database import SessionLocal
@@ -91,7 +92,19 @@ def sync_session_job(session_uuid: str) -> None:
                 trial = db.query(Trial).filter(Trial.external_id == ut["external_id"]).first()
                 if not trial:
                     continue
+                seen_entries: set[tuple] = set()
                 for e in ut["entries"]:
+                    dedup_key = (
+                        trial.id,
+                        e.get("dog_name"),
+                        e.get("event_name"),
+                        e.get("cat_number"),
+                        e.get("height_group"),
+                    )
+                    if dedup_key in seen_entries:
+                        log.debug("Skipping duplicate entry: %s", dedup_key)
+                        continue
+                    seen_entries.add(dedup_key)
                     db.add(SessionEntry(
                         session_uuid=session_uuid,
                         trial_id=trial.id,
@@ -230,6 +243,29 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                 trial.scraped_at = datetime.utcnow()
                 db.commit()
                 _resolve_catalogue_links(trial, db)
+
+                # my_day may only cover the current/next day (e.g. Saturday
+                # before the trial starts). If the catalogue PDF has additional
+                # days, supplement with those entries so multi-day trials show
+                # the full schedule.
+                if trial.catalogue_doc_url and not trial.catalogue_doc_url.rstrip("/").endswith("/entries"):
+                    my_day_days = set(e["day"] for e in my_day_payload["catalogue_entries"])
+                    try:
+                        cat_entries = await download_and_parse_catalogue(trial.catalogue_doc_url)
+                        cat_days = set(e["day"] for e in cat_entries)
+                        missing_days = cat_days - my_day_days
+                        if missing_days:
+                            log.info("refresh_trial_docs_job: my_day covered days %s; "
+                                     "catalogue PDF has extra days %s — supplementing",
+                                     sorted(my_day_days), sorted(missing_days))
+                            for e in cat_entries:
+                                if e["day"] in missing_days:
+                                    db.add(CatalogueEntry(trial_id=trial_id, **e))
+                            db.commit()
+                            _resolve_catalogue_links(trial, db)
+                    except Exception as e:
+                        log.warning("refresh_trial_docs_job: catalogue supplement failed: %s", e)
+
                 return
 
             # ----- Legacy fallback path -----
@@ -304,7 +340,6 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
 
 
 def _resolve_catalogue_links(trial: Trial, db) -> None:
-    import re as _re
     # Strip a trailing " (CODE)" / " (CODE1)" — trial 1482's catalogue tags AM/PM
     # session codes onto the event_name to keep them distinct, but the user's
     # /entries page omits the suffix.
@@ -329,15 +364,15 @@ def _resolve_catalogue_links(trial: Trial, db) -> None:
                 continue
             # cat_number is unique within a trial's catalogue; fall back to a
             # cat-only match and verify event names agree after stripping codes.
-            ce = (
-                db.query(CatalogueEntry)
-                .filter(
+            ce = next(
+                (c for c in db.query(CatalogueEntry).filter(
                     CatalogueEntry.trial_id == trial.id,
                     CatalogueEntry.cat_number == se.cat_number,
-                )
-                .first()
+                ).order_by(CatalogueEntry.id).all()
+                 if _norm(c.event_name) == _norm(se.event_name)),
+                None,
             )
-            if ce and _norm(ce.event_name) == _norm(se.event_name):
+            if ce:
                 se.catalogue_entry_id = ce.id
                 continue
 
