@@ -100,14 +100,19 @@ async def upload_catalogue(
     if not data:
         return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}?upload_error=1", status_code=303)
 
-    from app.queue import get_queue
-    get_queue().enqueue(
-        "app.worker.upload_catalogue_job",
-        trial_id,
-        data,
-        file.content_type or "",
-        job_timeout=300,
-    )
+    try:
+        from app.queue import get_queue
+        job = get_queue().enqueue(
+            "app.worker.upload_catalogue_job",
+            trial_id,
+            data,
+            file.content_type or "",
+            job_timeout=300,
+        )
+        log.info("upload_catalogue enqueued: trial_id=%s job=%s", trial_id, job.id)
+    except Exception:
+        log.warning("Failed to enqueue app.worker.upload_catalogue_job: trial_id=%s", trial_id, exc_info=True)
+        return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}?upload_error=1", status_code=303)
 
     return RedirectResponse(url=f"/s/{uuid}/trials/{trial_id}?refreshing=1", status_code=303)
 
