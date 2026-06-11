@@ -126,8 +126,9 @@ job "bar-hopping" {
       }
 
       resources {
-        cpu    = 128
-        memory = 128
+        cpu        = 128
+        memory     = 128
+        memory_max = 512
       }
     }
   }
@@ -251,8 +252,9 @@ EOH
       }
 
       resources {
-        cpu    = 1024
-        memory = 1024
+        cpu        = 1024
+        memory     = 1024
+        memory_max = 2048
       }
     }
   }
