@@ -54,6 +54,10 @@ def _day_num(label: str | None) -> int:
     if not label:
         return 1
     s = label.lower()
+    # Explicit "Day N" numbering (e.g. "Day 1", "Day 2 (8:30am)") takes priority.
+    dm = re.search(r"\bday\s+(\d+)\b", s)
+    if dm:
+        return int(dm.group(1))
     if "sun" in s:
         return 2
     if "mon" in s:
