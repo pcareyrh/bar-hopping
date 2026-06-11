@@ -87,7 +87,7 @@ class CatalogueEntry(Base):
 
     trial = relationship("Trial", back_populates="catalogue_entries")
 
-    __table_args__ = (UniqueConstraint("trial_id", "event_name", "cat_number"),)
+    __table_args__ = (UniqueConstraint("trial_id", "event_name", "cat_number", "day"),)
 
 
 class ClassSchedule(Base):
@@ -95,6 +95,7 @@ class ClassSchedule(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     trial_id = Column(Integer, ForeignKey("trials.id"), nullable=False)
+    day = Column(Integer, nullable=True)  # None = applies to any day (legacy / single-day schedules)
     ring_number = Column(String, nullable=False)
     class_name = Column(String, nullable=False)
     scheduled_start = Column(Time, nullable=True)

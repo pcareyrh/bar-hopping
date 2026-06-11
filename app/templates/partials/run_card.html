@@ -1,6 +1,7 @@
 {% set entry_id = p.entry_id %}
+{% set card_id = p.card_id or p.entry_id %}
 <div
-  id="run-card-{{ entry_id }}"
+  id="run-card-{{ card_id }}"
   class="bg-white rounded-xl border {% if p.conflict %}border-red-300{% elif p.nfc %}border-amber-200{% else %}border-gray-100{% endif %} shadow-sm px-4 py-3"
 >
   <!-- Header row -->
@@ -45,9 +46,12 @@
     <form
       class="mt-2 grid grid-cols-2 gap-2"
       hx-post="/s/{{ uuid }}/trials/{{ trial.id }}/schedule/{{ entry_id }}/override"
-      hx-target="#run-card-{{ entry_id }}"
+      hx-target="#run-card-{{ card_id }}"
       hx-swap="outerHTML"
     >
+      {% if p.catalogue_entry_id %}
+      <input type="hidden" name="catalogue_entry_id" value="{{ p.catalogue_entry_id }}" />
+      {% endif %}
       <label class="block">
         <span class="text-xs text-gray-500">Position</span>
         <input
