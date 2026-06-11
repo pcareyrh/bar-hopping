@@ -124,6 +124,19 @@ def update_override(
     )
 
 
+def _strip_event_code(name: str | None) -> str:
+    """Strip a trailing " (CODE)" / " (CODE1)" session/round suffix.
+
+    Nationals-style catalogues split one logical class into separately-coded
+    runs — e.g. "Masters Agility (ADM1)", "Masters Agility (ADM2)", or finals
+    rounds "Open Agility (ADO1/2/3)" — while the TopDog /entries page lists the
+    bare class name once per run. Normalizing both to "Masters Agility" lets a
+    single SessionEntry fan out to every run. Mirrors _norm in
+    worker._resolve_catalogue_links.
+    """
+    return re.sub(r"\s*\([A-Z]{2,4}\d*\)\s*$", "", name or "").strip()
+
+
 def _bare_ring(value: str | None) -> str | None:
     """Normalize a ring_number value to its bare identifier (e.g. "1", "2").
 
@@ -296,14 +309,18 @@ def _build_predictions(
         db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial.id).all()
     )
 
-    # Index every catalogue entry by (event_name, cat_number) so a single
-    # SessionEntry can fan out to one prediction per day it runs (multi-day
-    # trials run the same dog/class on several days). cat_number is unique
-    # within a trial's catalogue, so this groups the same dog/class across days.
+    # Index every catalogue entry by (stripped event_name, cat_number) so a
+    # single SessionEntry can fan out to every run of the class it covers. A
+    # logical class may span several days (same name, different day) and/or be
+    # split into separately-coded runs/rounds (e.g. ADM1/ADM2, ADO1/2/3) that
+    # share a calendar day. The /entries page lists each run once under the
+    # bare class name, but the SessionEntry dedup collapses them; stripping the
+    # "(CODE)" suffix here regroups all of a dog's runs of the class. cat_number
+    # is unique to one dog within a trial, so this never merges across dogs.
     from collections import defaultdict
     cat_by_key: dict[tuple[str, str], list[CatalogueEntry]] = defaultdict(list)
     for c in db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial.id).all():
-        cat_by_key[(c.event_name, c.cat_number)].append(c)
+        cat_by_key[(_strip_event_code(c.event_name), c.cat_number)].append(c)
 
     def _predict_for_ce(entry: SessionEntry, ce: CatalogueEntry) -> dict:
         ce_day = getattr(ce, "day", 1) or 1
@@ -396,10 +413,12 @@ def _build_predictions(
             })
             continue
 
-        # Fan out to every day this dog runs this class (one card per day).
+        # Fan out to every run this dog has of this class (one card per run,
+        # across days and/or coded rounds). Sort by day then run_position so
+        # same-day rounds keep their running order.
         day_entries = sorted(
-            cat_by_key.get((ce.event_name, ce.cat_number), [ce]),
-            key=lambda c: getattr(c, "day", 1) or 1,
+            cat_by_key.get((_strip_event_code(ce.event_name), ce.cat_number), [ce]),
+            key=lambda c: (getattr(c, "day", 1) or 1, c.run_position or 0),
         )
         for sib in day_entries:
             predictions.append(_predict_for_ce(entry, sib))
