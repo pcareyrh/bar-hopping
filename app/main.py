@@ -60,6 +60,18 @@ def _migrate() -> None:
             backfill_sql="UPDATE catalogue_entries SET day = 1 WHERE day IS NULL",
         )
         _add_column_if_missing(conn, "catalogue_entries", "ring_number", "VARCHAR")
+        _add_column_if_missing(conn, "class_schedules", "day", "INTEGER")
+
+        # Widen unique constraint to include day (Nationals: same dog runs same event on multiple days).
+        if conn.dialect.name == "postgresql":
+            conn.execute(text(
+                "ALTER TABLE catalogue_entries DROP CONSTRAINT IF EXISTS "
+                "catalogue_entries_trial_id_event_name_cat_number_key"
+            ))
+            conn.execute(text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS catalogue_entries_trial_id_event_name_cat_number_day_key "
+                "ON catalogue_entries (trial_id, event_name, cat_number, day)"
+            ))
 
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_trials_start_date ON trials(start_date)"

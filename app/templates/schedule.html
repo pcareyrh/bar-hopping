@@ -17,8 +17,14 @@
 </div>
 {% else %}
 
+{% set pred_days = predictions | map(attribute='day') | reject('none') | unique | list %}
 <div class="space-y-3">
+  {% set ns = namespace(prev_day=0) %}
   {% for p in predictions %}
+  {% if pred_days | length > 1 and p.day and p.day != ns.prev_day %}
+  <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-2 {% if not loop.first %}mt-2{% endif %}">Day {{ p.day }}</p>
+  {% set ns.prev_day = p.day %}
+  {% endif %}
   {% with %}
   {% include "partials/run_card.html" %}
   {% endwith %}

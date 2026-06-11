@@ -296,7 +296,7 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
 
         catalogue_entries: list[dict] = []
         class_schedules: list[dict] = []
-        seen_cat: set[tuple[str, str]] = set()  # (event_name, cat_number)
+        seen_cat: set[tuple[int, str, str]] = set()  # (day, event_name, cat_number)
 
         for (day_num, start_time, ring_name, class_idx, cls), html in zip(class_tasks, detail_htmls):
             if html is None:
@@ -318,7 +318,7 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
             for height, group in by_h.items():
                 non_nfc_total = sum(1 for e in group if not e["nfc"])
                 for pos, e in enumerate(group, start=1):
-                    key = (class_name, e["cat_number"])
+                    key = (day_num, class_name, e["cat_number"])
                     if key in seen_cat:
                         continue
                     seen_cat.add(key)
@@ -336,6 +336,7 @@ async def fetch_my_day(external_id: str, cookies: dict[str, str]) -> dict[str, A
                     })
 
             class_schedules.append({
+                "day": day_num,
                 "ring_number": bare_ring,
                 "class_name": class_name,
                 "scheduled_start": start_time if class_idx == 0 else None,

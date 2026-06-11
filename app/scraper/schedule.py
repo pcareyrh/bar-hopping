@@ -28,12 +28,11 @@ def parse_schedule_pdf(data: bytes) -> list[dict]:
     except ImportError:
         return []
 
-    results = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text() or ""
-            results.extend(_parse_schedule_text(text))
-    return results
+        # Parse the whole document at once so day/ring headers carry across
+        # page boundaries (multi-day schedules span many pages).
+        text = "\n".join((page.extract_text() or "") for page in pdf.pages)
+    return _parse_schedule_text(text)
 
 
 def parse_schedule_html(html: str) -> list[dict]:
@@ -51,8 +50,28 @@ def _parse_schedule_text(text: str) -> list[dict]:
     lines = text.splitlines()
 
     current_ring = None
+    current_day = None  # None = applies to any day; set when a day header is seen
+    day_order: dict[str, int] = {}  # weekday name -> sequential day number
     for line in lines:
         line = line.strip()
+
+        # Explicit day header: "Day 1", "DAY 2".
+        day_m = re.match(r"(?i)^Day\s+(\d+)\b", line)
+        if day_m:
+            current_day = int(day_m.group(1))
+            continue
+
+        # Weekday header: "Saturday", "Sunday 23 June", etc. Assign sequential
+        # day numbers in order of first appearance to match catalogue day indexing.
+        wd_m = re.match(
+            r"(?i)^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b", line
+        )
+        if wd_m:
+            wd = wd_m.group(1).lower()
+            if wd not in day_order:
+                day_order[wd] = len(day_order) + 1
+            current_day = day_order[wd]
+            continue
 
         # Ring header: "Ring 1", "Ring 2", "RING 1"
         ring_m = re.match(r"(?i)^Ring\s*(\d+)", line)
@@ -70,6 +89,7 @@ def _parse_schedule_text(text: str) -> list[dict]:
             parsed_time = _parse_time(time_str)
             if parsed_time and _looks_like_class(class_name):
                 results.append({
+                    "day": current_day,
                     "ring_number": current_ring or "1",
                     "class_name": class_name,
                     "scheduled_start": parsed_time,

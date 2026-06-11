@@ -71,6 +71,7 @@ def update_override(
     time_per_dog_override: str = Form(default=""),
     ring_setup_mins: str = Form(default=""),
     walk_mins: str = Form(default=""),
+    catalogue_entry_id: str = Form(default=""),
     db: DBSession = Depends(get_db),
 ):
     session = _get_session(uuid, db)
@@ -87,11 +88,15 @@ def update_override(
 
     if entry.catalogue_entry and entry.ring_number:
         normalized_ring = _bare_ring(entry.ring_number)
+        ce_day = getattr(entry.catalogue_entry, "day", 1) or 1
         cs_list = db.query(ClassSchedule).filter(
             ClassSchedule.trial_id == trial_id,
             ClassSchedule.class_name == entry.event_name,
         ).all()
-        cs = next((c for c in cs_list if _bare_ring(c.ring_number) == normalized_ring), None)
+        ring_matches = [c for c in cs_list if _bare_ring(c.ring_number) == normalized_ring]
+        # Prefer the row for this entry's day; fall back to a day-agnostic row.
+        cs = next((c for c in ring_matches if c.day == ce_day), None) \
+            or next((c for c in ring_matches if c.day is None), None)
         if cs:
             if ring_setup_mins.strip():
                 cs.ring_setup_mins = int(ring_setup_mins)
@@ -103,7 +108,16 @@ def update_override(
     predictions = _build_predictions(session, trial, db)
     flag_conflicts(predictions)
 
-    pred = next((p for p in predictions if p["entry_id"] == entry_id), None)
+    # Re-render the specific day's card. A multi-day entry has one prediction
+    # per day, so match the catalogue_entry_id too; fall back to the entry.
+    ce_id = int(catalogue_entry_id) if catalogue_entry_id.strip() else None
+    pred = next(
+        (p for p in predictions
+         if p["entry_id"] == entry_id and (ce_id is None or p["catalogue_entry_id"] == ce_id)),
+        None,
+    )
+    if pred is None:
+        pred = next((p for p in predictions if p["entry_id"] == entry_id), None)
     return templates.TemplateResponse(
         request, "partials/run_card.html",
         {"session": session, "uuid": uuid, "trial": trial, "p": pred},
@@ -278,12 +292,84 @@ def _build_predictions(
         db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial.id).all()
     )
 
+    # Index every catalogue entry by (event_name, cat_number) so a single
+    # SessionEntry can fan out to one prediction per day it runs (multi-day
+    # trials run the same dog/class on several days). cat_number is unique
+    # within a trial's catalogue, so this groups the same dog/class across days.
+    from collections import defaultdict
+    cat_by_key: dict[tuple[str, str], list[CatalogueEntry]] = defaultdict(list)
+    for c in db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial.id).all():
+        cat_by_key[(c.event_name, c.cat_number)].append(c)
+
+    def _predict_for_ce(entry: SessionEntry, ce: CatalogueEntry) -> dict:
+        ce_day = getattr(ce, "day", 1) or 1
+        cs = _match_class_schedule(all_class_schedules, ce.event_name, ce_day)
+
+        # Anchor each day's prediction on its own calendar date so multi-day
+        # rows sort correctly and don't false-conflict across days.
+        day_date = (trial.start_date + timedelta(days=ce_day - 1)) if trial.start_date else None
+
+        height_tpd = session.tpd_for(ce.height_group, ce.event_name)
+        if cs and cs.scheduled_start:
+            pred = predict_run(
+                scheduled_start=cs.scheduled_start,
+                ring_setup_mins=cs.ring_setup_mins or session.default_setup_mins,
+                walk_mins=cs.walk_mins or session.default_walk_mins,
+                run_position=ce.run_position,
+                avg_time_per_dog=height_tpd,
+                trial_date=day_date,
+                position_override=entry.position_override,
+                time_per_dog_override=entry.time_per_dog_override,
+            )
+            predicted_start = pred["predicted_start"]
+            predicted_start_str = format_predicted_time(predicted_start)
+        elif (ce.event_name, ce.height_group, getattr(ce, "day", 1) or 1) in block_starts:
+            pred = predict_run_from_block(
+                block_first_run=block_starts[(ce.event_name, ce.height_group, getattr(ce, "day", 1) or 1)],
+                run_position=ce.run_position,
+                avg_time_per_dog=height_tpd,
+                position_override=entry.position_override,
+                time_per_dog_override=entry.time_per_dog_override,
+            )
+            predicted_start = pred["predicted_start"]
+            predicted_start_str = format_predicted_time(predicted_start)
+        else:
+            pred = {}
+            predicted_start = None
+            predicted_start_str = None
+
+        raw_ring = entry.ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None)
+        return {
+            "entry_id": entry.id,
+            "card_id": f"{entry.id}-{ce.id}",
+            "dog_name": entry.dog_name,
+            "event_name": ce.event_name,
+            "height_group": ce.height_group,
+            "cat_number": ce.cat_number,
+            "catalogue_entry_id": ce.id,
+            "ring_number": raw_ring,
+            "ring_label": _ring_label(raw_ring),
+            "day": getattr(ce, "day", 1) or 1,
+            "run_position": ce.run_position,
+            "height_group_total": ce.height_group_total,
+            "nfc": ce.nfc,
+            "predicted_start": predicted_start,
+            "predicted_start_str": predicted_start_str,
+            "effective_position": pred.get("effective_position", ce.run_position),
+            "effective_tpd": pred.get("effective_tpd", height_tpd),
+            "pending": False,
+            "position_override": entry.position_override,
+            "time_per_dog_override": entry.time_per_dog_override,
+            "conflict": False,
+        }
+
     predictions = []
     for entry in entries:
         ce: CatalogueEntry | None = entry.catalogue_entry
         if ce is None:
             predictions.append({
                 "entry_id": entry.id,
+                "card_id": str(entry.id),
                 "dog_name": entry.dog_name,
                 "event_name": entry.event_name,
                 "height_group": entry.height_group,
@@ -306,83 +392,47 @@ def _build_predictions(
             })
             continue
 
-        cs = _match_class_schedule(all_class_schedules, ce.event_name)
-
-        height_tpd = session.tpd_for(ce.height_group, ce.event_name)
-        if cs and cs.scheduled_start:
-            pred = predict_run(
-                scheduled_start=cs.scheduled_start,
-                ring_setup_mins=cs.ring_setup_mins or session.default_setup_mins,
-                walk_mins=cs.walk_mins or session.default_walk_mins,
-                run_position=ce.run_position,
-                avg_time_per_dog=height_tpd,
-                trial_date=trial.start_date,
-                position_override=entry.position_override,
-                time_per_dog_override=entry.time_per_dog_override,
-            )
-            predicted_start = pred["predicted_start"]
-            predicted_start_str = format_predicted_time(predicted_start)
-        elif (ce.event_name, ce.height_group, getattr(ce, "day", 1) or 1) in block_starts:
-            pred = predict_run_from_block(
-                block_first_run=block_starts[(ce.event_name, ce.height_group, getattr(ce, "day", 1) or 1)],
-                run_position=ce.run_position,
-                avg_time_per_dog=height_tpd,
-                position_override=entry.position_override,
-                time_per_dog_override=entry.time_per_dog_override,
-            )
-            predicted_start = pred["predicted_start"]
-            predicted_start_str = format_predicted_time(predicted_start)
-        else:
-            pred = {}
-            predicted_start = None
-            predicted_start_str = None
-
-        raw_ring = entry.ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None)
-        predictions.append({
-            "entry_id": entry.id,
-            "dog_name": entry.dog_name,
-            "event_name": ce.event_name,
-            "height_group": ce.height_group,
-            "cat_number": ce.cat_number,
-            "ring_number": entry.ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None),
-            "catalogue_entry_id": ce.id,
-            "ring_number": raw_ring,
-            "ring_label": _ring_label(raw_ring),
-            "day": getattr(ce, "day", 1) or 1,
-            "run_position": ce.run_position,
-            "height_group_total": ce.height_group_total,
-            "nfc": ce.nfc,
-            "predicted_start": predicted_start,
-            "predicted_start_str": predicted_start_str,
-            "effective_position": pred.get("effective_position", ce.run_position),
-            "effective_tpd": pred.get("effective_tpd", height_tpd),
-            "pending": False,
-            "position_override": entry.position_override,
-            "time_per_dog_override": entry.time_per_dog_override,
-            "conflict": False,
-        })
+        # Fan out to every day this dog runs this class (one card per day).
+        day_entries = sorted(
+            cat_by_key.get((ce.event_name, ce.cat_number), [ce]),
+            key=lambda c: getattr(c, "day", 1) or 1,
+        )
+        for sib in day_entries:
+            predictions.append(_predict_for_ce(entry, sib))
 
     predictions.sort(key=lambda p: (p["predicted_start"] is None, p["predicted_start"] or ""))
     return predictions
 
 
 def _match_class_schedule(
-    schedules: list[ClassSchedule], event_name: str
+    schedules: list[ClassSchedule], event_name: str, day: int | None = None
 ) -> ClassSchedule | None:
-    """Find the best matching ClassSchedule for a catalogue event name.
+    """Find the best matching ClassSchedule for a catalogue event name and day.
 
-    Tries exact match first, then case-insensitive substring containment
-    to handle variations like 'Agility' vs 'Masters Agility'.
+    A schedule with day == None applies to any day (legacy / single-day
+    schedules). For multi-day trials we prefer a day-specific match so the
+    same class on different days picks up its own start time, falling back to
+    a day-agnostic row. Within each day pass, tries exact name match first,
+    then case-insensitive substring containment ('Agility' vs 'Masters Agility').
     """
-    for cs in schedules:
-        if cs.class_name == event_name:
-            return cs
     en = event_name.lower()
-    for cs in schedules:
-        cn = cs.class_name.lower()
-        if cn in en or en in cn:
-            return cs
-    return None
+
+    def _match_in(candidates: list[ClassSchedule]) -> ClassSchedule | None:
+        for cs in candidates:
+            if cs.class_name == event_name:
+                return cs
+        for cs in candidates:
+            cn = cs.class_name.lower()
+            if cn in en or en in cn:
+                return cs
+        return None
+
+    if day is not None:
+        # Day-specific rows win over day-agnostic ones.
+        hit = _match_in([cs for cs in schedules if cs.day == day])
+        if hit:
+            return hit
+    return _match_in([cs for cs in schedules if cs.day is None])
 
 
 def _get_session(uuid: str, db: DBSession) -> Session:
