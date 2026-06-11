@@ -385,6 +385,7 @@ def upload_catalogue_job(trial_id: int, data: bytes, content_type: str) -> None:
         db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
         for e in entries:
             db.add(CatalogueEntry(trial_id=trial_id, **e))
+        db.flush()
         _resolve_catalogue_links(trial, db)
         db.commit()
         log.info("upload_catalogue_job: %d entries stored for trial %s", len(entries), trial.external_id)
