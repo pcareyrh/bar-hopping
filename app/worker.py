@@ -363,6 +363,22 @@ def upload_catalogue_job(trial_id: int, data: bytes, content_type: str) -> None:
             log.warning("upload_catalogue_job: 0 entries parsed for trial %s", trial.external_id)
             return
 
+        # PDF finals/running-order pages can re-list the same entries; keep first occurrence.
+        seen_keys: set[tuple] = set()
+        deduped: list[dict] = []
+        for e in entries:
+            key = (e["event_name"], e["cat_number"], e.get("day", 1))
+            if key not in seen_keys:
+                seen_keys.add(key)
+                deduped.append(e)
+        if len(deduped) < len(entries):
+            log.info(
+                "upload_catalogue_job: dropped %d duplicate entries for trial %s",
+                len(entries) - len(deduped),
+                trial.external_id,
+            )
+        entries = deduped
+
         db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
             {"catalogue_entry_id": None}, synchronize_session=False
         )
