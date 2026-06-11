@@ -204,7 +204,8 @@ def _compute_catalogue_blocks(
         max_total: dict[tuple[str, int], int] = {}
         event_order: dict[str, int] = {}
         event_heights: dict[str, list[int]] = {}
-        event_rings: dict[str, str | None] = {}
+        event_rings: dict[str, str | None] = {}   # fallback: first ring seen per event
+        height_rings: dict[tuple[str, int], str | None] = {}  # ring per (event, height)
         for ce in day_entries:
             key = (ce.event_name, ce.height_group)
             counts[key] = counts.get(key, 0) + 1
@@ -215,6 +216,7 @@ def _compute_catalogue_blocks(
             heights = event_heights.setdefault(ce.event_name, [])
             if ce.height_group not in heights:
                 heights.append(ce.height_group)
+                height_rings[key] = getattr(ce, "ring_number", None)
 
         # For HTML sentinel entries (run_position=0, one row per class/height),
         # height_group_total is the real dog count; use whichever is larger.
@@ -222,10 +224,12 @@ def _compute_catalogue_blocks(
             counts[key] = max(counts[key], max_total[key])
 
         # Build per-ring running order.
+        # Use per-(event, height) ring so classes split across rings at Nationals
+        # (e.g. ADM1 400mm in Ring 7 while 500mm runs in Ring 4) land correctly.
         rings: dict[str, list[dict]] = {}
         for event in sorted(event_heights, key=lambda e: event_order[e]):
-            ring = _ring_of(event, event_rings.get(event))
             for height in event_heights[event]:
+                ring = _ring_of(event, height_rings.get((event, height)) or event_rings.get(event))
                 rings.setdefault(ring, []).append({
                     "event_name": event,
                     "height_group": height,
