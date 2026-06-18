@@ -36,18 +36,20 @@
 {% if day_blocks %}
 <div class="mt-8">
   <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Full Day Schedule</h2>
+  {% if available_days | length > 1 %}
+  <div class="flex gap-2 mb-3 flex-wrap">
+    {% for d in available_days %}
+    <a href="?day={{ d }}" class="px-3 py-1.5 rounded-full text-xs font-semibold transition {% if d == selected_day %}bg-brand text-white{% else %}bg-gray-100 text-gray-500 hover:bg-gray-200{% endif %}">
+      Day {{ d }}{% if day_dates[d] %} — {{ day_dates[d].strftime("%-d %b") }}{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% if trial_start_str %}
   <p class="text-xs text-gray-400 mb-2">Estimated from a {{ trial_start_str }} start using the catalogue order.</p>
   {% endif %}
   <div class="space-y-1">
-    {% set ns = namespace(prev_day=0) %}
     {% for b in day_blocks %}
-    {% if b.day != ns.prev_day %}
-    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-2 {% if not loop.first %}mt-2{% endif %}">
-      Day {{ b.day }}{% if b.trial_date %} — {{ b.trial_date.strftime("%-d %B") }}{% endif %}
-    </p>
-    {% set ns.prev_day = b.day %}
-    {% endif %}
     {% if b.is_lunch_break %}
     <div class="flex items-center justify-between border border-dashed border-amber-200 rounded-lg px-3 py-1.5 text-xs text-amber-700 bg-amber-50">
       <p>Lunch break · {{ b.ring }} ring</p>
@@ -85,9 +87,7 @@
     <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/schedule/lunch-break" class="bg-white border border-gray-200 rounded-2xl p-4">
       <input type="hidden" name="day" value="{{ lb.day }}" />
       <input type="hidden" name="ring" value="{{ lb.ring }}" />
-      <p class="text-xs text-gray-500 mb-2">
-        {% if multi_day %}Day {{ lb.day }} · {% endif %}{{ lb.ring }}
-      </p>
+      <p class="text-xs text-gray-500 mb-2">{{ lb.ring }}</p>
       <div class="flex items-center gap-3 flex-wrap">
         <div class="flex items-center gap-2">
           <label class="text-xs text-gray-600" for="{{ form_id }}_at">Time</label>

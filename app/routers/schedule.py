@@ -1,7 +1,7 @@
 import re
 from datetime import date, datetime, time, timedelta
 
-from fastapi import APIRouter, Depends, Form, Request, HTTPException
+from fastapi import APIRouter, Depends, Form, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session as DBSession
@@ -23,7 +23,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 @router.get("/s/{uuid}/trials/{trial_id}/schedule", response_class=HTMLResponse)
-def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = Depends(get_db)):
+def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = Depends(get_db), day: int | None = Query(default=None)):
     session = _get_session(uuid, db)
     trial = _get_trial(trial_id, db)
 
@@ -68,6 +68,12 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
                 }
     lunch_break_configs = list(seen_pairs.values())
 
+    available_days = sorted({b["day"] for b in day_blocks})
+    selected_day = day if day in available_days else (available_days[0] if available_days else 1)
+    day_dates = {b["day"]: b.get("trial_date") for b in day_blocks if not b.get("is_lunch_break")}
+    day_blocks_view = [b for b in day_blocks if b["day"] == selected_day]
+    lunch_break_configs_view = [c for c in lunch_break_configs if c["day"] == selected_day]
+
     return templates.TemplateResponse(
         request, "schedule.html",
         {
@@ -75,9 +81,12 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
             "uuid": uuid,
             "trial": trial,
             "predictions": predictions,
-            "day_blocks": day_blocks,
-            "lunch_break_configs": lunch_break_configs,
-            "multi_day": len({c["day"] for c in lunch_break_configs}) > 1,
+            "day_blocks": day_blocks_view,
+            "lunch_break_configs": lunch_break_configs_view,
+            "available_days": available_days,
+            "selected_day": selected_day,
+            "day_dates": day_dates,
+            "multi_day": len(available_days) > 1,
             "trial_start_str": format_predicted_time(
                 datetime.combine(trial.start_date or date.today(), trial_start)
             ) if not has_class_schedules else None,
