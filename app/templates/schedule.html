@@ -90,7 +90,7 @@
       <div class="flex items-center gap-2">
         <label class="text-xs text-gray-600" for="lunch_break_mins">Duration</label>
         <input type="number" id="lunch_break_mins" name="lunch_break_mins" min="0" max="120"
-          value="{{ trial.lunch_break_mins or 45 }}"
+          value="{{ trial.lunch_break_mins if trial.lunch_break_mins is not none else 45 }}"
           class="w-16 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand" />
         <span class="text-xs text-gray-400">min</span>
       </div>

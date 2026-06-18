@@ -38,7 +38,7 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
         walk_mins=session.default_walk_mins,
         tpd_for_height=session.tpd_for,
         lunch_break_at=trial.lunch_break_at,
-        lunch_break_mins=trial.lunch_break_mins or 45,
+        lunch_break_mins=trial.lunch_break_mins if trial.lunch_break_mins is not None else 45,
     )
 
     predictions = _build_predictions(session, trial, db, day_blocks=day_blocks)
@@ -171,8 +171,13 @@ def update_lunch_break(
 ):
     _get_session(uuid, db)
     trial = _get_trial(trial_id, db)
+    if not 0 <= lunch_break_mins <= 480:
+        raise HTTPException(status_code=400, detail="lunch_break_mins must be between 0 and 480")
     if lunch_break_at.strip():
-        trial.lunch_break_at = datetime.strptime(lunch_break_at.strip(), "%H:%M").time()
+        try:
+            trial.lunch_break_at = datetime.strptime(lunch_break_at.strip(), "%H:%M").time()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid lunch_break_at format; expected HH:MM")
     else:
         trial.lunch_break_at = None
     trial.lunch_break_mins = lunch_break_mins
@@ -348,7 +353,7 @@ def _build_predictions(
             walk_mins=session.default_walk_mins,
             tpd_for_height=session.tpd_for,
             lunch_break_at=trial.lunch_break_at,
-            lunch_break_mins=trial.lunch_break_mins or 45,
+            lunch_break_mins=trial.lunch_break_mins if trial.lunch_break_mins is not None else 45,
         )
     block_starts: dict[tuple[str, int, int], datetime] = {
         (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"] for b in day_blocks
