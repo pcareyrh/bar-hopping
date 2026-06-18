@@ -1,13 +1,13 @@
 import re
 from datetime import date, datetime, time, timedelta
 
-from fastapi import APIRouter, Depends, Form, Request, HTTPException
+from fastapi import APIRouter, Depends, Form, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session as DBSession
 
 from app.database import get_db
-from app.models import Session, Trial, SessionEntry, CatalogueEntry, ClassSchedule
+from app.models import Session, Trial, SessionEntry, CatalogueEntry, ClassSchedule, TrialLunchBreak
 from app.engine.predictor import (
     predict_run,
     predict_run_from_block,
@@ -23,7 +23,7 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 @router.get("/s/{uuid}/trials/{trial_id}/schedule", response_class=HTMLResponse)
-def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = Depends(get_db)):
+def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = Depends(get_db), day: int | None = Query(default=None)):
     session = _get_session(uuid, db)
     trial = _get_trial(trial_id, db)
 
@@ -31,17 +31,19 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
     has_class_schedules = (
         db.query(ClassSchedule.id).filter(ClassSchedule.trial_id == trial_id).first() is not None
     )
+    lb_records = db.query(TrialLunchBreak).filter(TrialLunchBreak.trial_id == trial_id).all()
+    lunch_breaks = {(r.day, r.ring): (r.lunch_break_at, r.lunch_break_mins) for r in lb_records}
+
     day_blocks = _compute_catalogue_blocks(
         trial, db,
         base_start=trial_start,
         setup_mins=session.default_setup_mins,
         walk_mins=session.default_walk_mins,
         tpd_for_height=session.tpd_for,
-        lunch_break_at=trial.lunch_break_at,
-        lunch_break_mins=trial.lunch_break_mins if trial.lunch_break_mins is not None else 45,
+        lunch_breaks=lunch_breaks,
     )
 
-    predictions = _build_predictions(session, trial, db, day_blocks=day_blocks)
+    predictions = _build_predictions(session, trial, db, day_blocks=day_blocks, lunch_breaks=lunch_breaks)
     flag_conflicts(predictions)
 
     user_block_keys = {(p["day"], p["event_name"], p["height_group"]) for p in predictions if not p["pending"]}
@@ -52,6 +54,26 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
         b["first_run_str"] = format_predicted_time(b["first_run"])
         b["last_run_str"] = format_predicted_time(b["last_run"])
 
+    seen_pairs: dict[tuple[int, str], dict] = {}
+    for b in day_blocks:
+        if not b.get("is_lunch_break"):
+            key = (b["day"], b["ring"])
+            if key not in seen_pairs:
+                lb = lunch_breaks.get(key)
+                seen_pairs[key] = {
+                    "day": b["day"],
+                    "ring": b["ring"],
+                    "lunch_break_at": lb[0] if lb else None,
+                    "lunch_break_mins": lb[1] if lb else 45,
+                }
+    lunch_break_configs = list(seen_pairs.values())
+
+    available_days = sorted({b["day"] for b in day_blocks})
+    selected_day = day if day in available_days else (available_days[0] if available_days else 1)
+    day_dates = {b["day"]: b.get("trial_date") for b in day_blocks if not b.get("is_lunch_break")}
+    day_blocks_view = [b for b in day_blocks if b["day"] == selected_day]
+    lunch_break_configs_view = [c for c in lunch_break_configs if c["day"] == selected_day]
+
     return templates.TemplateResponse(
         request, "schedule.html",
         {
@@ -59,7 +81,12 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
             "uuid": uuid,
             "trial": trial,
             "predictions": predictions,
-            "day_blocks": day_blocks,
+            "day_blocks": day_blocks_view,
+            "lunch_break_configs": lunch_break_configs_view,
+            "available_days": available_days,
+            "selected_day": selected_day,
+            "day_dates": day_dates,
+            "multi_day": len(available_days) > 1,
             "trial_start_str": format_predicted_time(
                 datetime.combine(trial.start_date or date.today(), trial_start)
             ) if not has_class_schedules else None,
@@ -165,22 +192,28 @@ def _ring_label(value: str | None) -> str | None:
 def update_lunch_break(
     uuid: str,
     trial_id: int,
+    day: int = Form(...),
+    ring: str = Form(...),
     lunch_break_at: str = Form(default=""),
     lunch_break_mins: int = Form(default=45),
     db: DBSession = Depends(get_db),
 ):
     _get_session(uuid, db)
-    trial = _get_trial(trial_id, db)
+    _get_trial(trial_id, db)
     if not 0 <= lunch_break_mins <= 480:
         raise HTTPException(status_code=400, detail="lunch_break_mins must be between 0 and 480")
+    lb = db.query(TrialLunchBreak).filter_by(trial_id=trial_id, day=day, ring=ring).first()
+    if lb is None:
+        lb = TrialLunchBreak(trial_id=trial_id, day=day, ring=ring)
+        db.add(lb)
     if lunch_break_at.strip():
         try:
-            trial.lunch_break_at = datetime.strptime(lunch_break_at.strip(), "%H:%M").time()
+            lb.lunch_break_at = datetime.strptime(lunch_break_at.strip(), "%H:%M").time()
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid lunch_break_at format; expected HH:MM")
     else:
-        trial.lunch_break_at = None
-    trial.lunch_break_mins = lunch_break_mins
+        lb.lunch_break_at = None
+    lb.lunch_break_mins = lunch_break_mins
     db.commit()
     return RedirectResponse(f"/s/{uuid}/trials/{trial_id}/schedule", status_code=303)
 
@@ -211,8 +244,7 @@ def _compute_catalogue_blocks(
     setup_mins: int,
     walk_mins: int,
     tpd_for_height,
-    lunch_break_at: time | None = None,
-    lunch_break_mins: int = 45,
+    lunch_breaks: dict[tuple[int, str], tuple[time | None, int]] | None = None,
 ) -> list[dict]:
     """Estimate when each (event_name, height_group) block runs based purely on
     the catalogue. We assume two rings (agility + jumping) running in parallel
@@ -289,6 +321,9 @@ def _compute_catalogue_blocks(
             cursor = datetime.combine(day_date, base_start)
             last_event: str | None = None
             lunch_injected = False
+            ring_lb = (lunch_breaks or {}).get((day_num, ring_name))
+            lb_at: time | None = ring_lb[0] if ring_lb else None
+            lb_mins: int = ring_lb[1] if ring_lb else 45
             for b in blocks:
                 if b["event_name"] != last_event:
                     b["setup_mins"] = setup_mins
@@ -308,9 +343,9 @@ def _compute_catalogue_blocks(
                 cursor += timedelta(seconds=b["count"] * tpd_for_height(b["height_group"], b["event_name"]))
                 b["last_run"] = cursor
                 out.append(b)
-                if lunch_break_at and not lunch_injected and cursor.time() >= lunch_break_at:
+                if lb_at and not lunch_injected and cursor.time() >= lb_at:
                     lunch_start = cursor
-                    cursor += timedelta(minutes=lunch_break_mins)
+                    cursor += timedelta(minutes=lb_mins)
                     out.append({
                         "event_name": "Lunch Break",
                         "height_group": None,
@@ -337,6 +372,7 @@ def _build_predictions(
     db: DBSession,
     *,
     day_blocks: list[dict] | None = None,
+    lunch_breaks: dict[tuple[int, str], tuple[time | None, int]] | None = None,
 ) -> list[dict]:
     entries = (
         db.query(SessionEntry)
@@ -346,14 +382,16 @@ def _build_predictions(
 
     if day_blocks is None:
         # Recompute when called from the override handler — cheap.
+        if lunch_breaks is None:
+            lb_records = db.query(TrialLunchBreak).filter(TrialLunchBreak.trial_id == trial.id).all()
+            lunch_breaks = {(r.day, r.ring): (r.lunch_break_at, r.lunch_break_mins) for r in lb_records}
         day_blocks = _compute_catalogue_blocks(
             trial, db,
             base_start=trial.start_time or DEFAULT_TRIAL_START,
             setup_mins=session.default_setup_mins,
             walk_mins=session.default_walk_mins,
             tpd_for_height=session.tpd_for,
-            lunch_break_at=trial.lunch_break_at,
-            lunch_break_mins=trial.lunch_break_mins if trial.lunch_break_mins is not None else 45,
+            lunch_breaks=lunch_breaks,
         )
     block_starts: dict[tuple[str, int, int], datetime] = {
         (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"] for b in day_blocks

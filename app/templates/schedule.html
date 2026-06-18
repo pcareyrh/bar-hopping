@@ -36,18 +36,20 @@
 {% if day_blocks %}
 <div class="mt-8">
   <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Full Day Schedule</h2>
+  {% if available_days | length > 1 %}
+  <div class="flex gap-2 mb-3 flex-wrap">
+    {% for d in available_days %}
+    <a href="?day={{ d }}" class="px-3 py-1.5 rounded-full text-xs font-semibold transition {% if d == selected_day %}bg-brand text-white{% else %}bg-gray-100 text-gray-500 hover:bg-gray-200{% endif %}">
+      Day {{ d }}{% if day_dates[d] %} — {{ day_dates[d].strftime("%-d %b") }}{% endif %}
+    </a>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% if trial_start_str %}
   <p class="text-xs text-gray-400 mb-2">Estimated from a {{ trial_start_str }} start using the catalogue order.</p>
   {% endif %}
   <div class="space-y-1">
-    {% set ns = namespace(prev_day=0) %}
     {% for b in day_blocks %}
-    {% if b.day != ns.prev_day %}
-    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-2 {% if not loop.first %}mt-2{% endif %}">
-      Day {{ b.day }}{% if b.trial_date %} — {{ b.trial_date.strftime("%-d %B") }}{% endif %}
-    </p>
-    {% set ns.prev_day = b.day %}
-    {% endif %}
     {% if b.is_lunch_break %}
     <div class="flex items-center justify-between border border-dashed border-amber-200 rounded-lg px-3 py-1.5 text-xs text-amber-700 bg-amber-50">
       <p>Lunch break · {{ b.ring }} ring</p>
@@ -77,28 +79,38 @@
     {% endfor %}
   </div>
 
-  <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/schedule/lunch-break" class="mt-4 bg-white border border-gray-200 rounded-2xl p-4">
-    <p class="text-xs font-semibold text-gray-700 mb-3">Lunch Break</p>
-    <div class="flex items-center gap-3 flex-wrap">
-      <div class="flex items-center gap-2">
-        <label class="text-xs text-gray-600" for="lunch_break_at">Time</label>
-        <input type="time" id="lunch_break_at" name="lunch_break_at"
-          value="{{ trial.lunch_break_at.strftime('%H:%M') if trial.lunch_break_at else '' }}"
-          class="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
+  {% if lunch_break_configs %}
+  <div class="mt-4 space-y-3">
+    <p class="text-xs font-semibold text-gray-700">Lunch Breaks</p>
+    {% for lb in lunch_break_configs %}
+    {% set form_id = "lb_" ~ lb.day ~ "_" ~ lb.ring | replace(" ", "_") %}
+    <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/schedule/lunch-break" class="bg-white border border-gray-200 rounded-2xl p-4">
+      <input type="hidden" name="day" value="{{ lb.day }}" />
+      <input type="hidden" name="ring" value="{{ lb.ring }}" />
+      <p class="text-xs text-gray-500 mb-2">{{ lb.ring }}</p>
+      <div class="flex items-center gap-3 flex-wrap">
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-gray-600" for="{{ form_id }}_at">Time</label>
+          <input type="time" id="{{ form_id }}_at" name="lunch_break_at"
+            value="{{ lb.lunch_break_at.strftime('%H:%M') if lb.lunch_break_at else '' }}"
+            class="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-gray-600" for="{{ form_id }}_mins">Duration</label>
+          <input type="number" id="{{ form_id }}_mins" name="lunch_break_mins" min="0" max="480"
+            value="{{ lb.lunch_break_mins }}"
+            class="w-16 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand" />
+          <span class="text-xs text-gray-400">min</span>
+        </div>
+        <button type="submit" class="bg-brand text-white px-4 py-2 rounded-xl text-xs font-semibold hover:bg-brand-dark transition active:scale-95">Save</button>
+        {% if lb.lunch_break_at %}
+        <button type="submit" name="lunch_break_at" value="" formnovalidate class="text-xs text-gray-400 hover:text-red-400 transition">Clear</button>
+        {% endif %}
       </div>
-      <div class="flex items-center gap-2">
-        <label class="text-xs text-gray-600" for="lunch_break_mins">Duration</label>
-        <input type="number" id="lunch_break_mins" name="lunch_break_mins" min="0" max="120"
-          value="{{ trial.lunch_break_mins if trial.lunch_break_mins is not none else 45 }}"
-          class="w-16 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand" />
-        <span class="text-xs text-gray-400">min</span>
-      </div>
-      <button type="submit" class="bg-brand text-white px-4 py-2 rounded-xl text-xs font-semibold hover:bg-brand-dark transition active:scale-95">Save</button>
-      {% if trial.lunch_break_at %}
-      <button type="submit" name="lunch_break_at" value="" formnovalidate class="text-xs text-gray-400 hover:text-red-400 transition">Clear</button>
-      {% endif %}
-    </div>
-  </form>
+    </form>
+    {% endfor %}
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 
