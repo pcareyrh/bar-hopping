@@ -69,6 +69,7 @@ class Trial(Base):
     catalogue_entries = relationship("CatalogueEntry", back_populates="trial", cascade="all, delete-orphan")
     class_schedules = relationship("ClassSchedule", back_populates="trial", cascade="all, delete-orphan")
     session_entries = relationship("SessionEntry", back_populates="trial")
+    lunch_breaks = relationship("TrialLunchBreak", back_populates="trial", cascade="all, delete-orphan")
 
 
 class CatalogueEntry(Base):
@@ -105,6 +106,21 @@ class ClassSchedule(Base):
     walk_mins = Column(Integer, nullable=True)
 
     trial = relationship("Trial", back_populates="class_schedules")
+
+
+class TrialLunchBreak(Base):
+    __tablename__ = "trial_lunch_breaks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trial_id = Column(Integer, ForeignKey("trials.id"), nullable=False)
+    day = Column(Integer, nullable=False)
+    ring = Column(String, nullable=False)
+    lunch_break_at = Column(Time, nullable=True)
+    lunch_break_mins = Column(Integer, nullable=False, default=45)
+
+    trial = relationship("Trial", back_populates="lunch_breaks")
+
+    __table_args__ = (UniqueConstraint("trial_id", "day", "ring"),)
 
 
 class SessionEntry(Base):
