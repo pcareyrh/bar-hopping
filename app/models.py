@@ -63,6 +63,8 @@ class Trial(Base):
     schedule_doc_url = Column(String, nullable=True)
     catalogue_doc_url = Column(String, nullable=True)
     scraped_at = Column(DateTime, nullable=True)
+    lunch_break_at = Column(Time, nullable=True)
+    lunch_break_mins = Column(Integer, nullable=True)
 
     catalogue_entries = relationship("CatalogueEntry", back_populates="trial", cascade="all, delete-orphan")
     class_schedules = relationship("ClassSchedule", back_populates="trial", cascade="all, delete-orphan")
