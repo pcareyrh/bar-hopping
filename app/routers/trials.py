@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, File, Request, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session as DBSession
@@ -65,16 +65,37 @@ def trial_detail(uuid: str, trial_id: int, request: Request, db: DBSession = Dep
             ),
             "refreshing": request.query_params.get("refreshing") == "1",
             "upload_error": request.query_params.get("upload_error") == "1",
+            "overwrite_blocked": request.query_params.get("overwrite_blocked") == "1",
         },
     )
 
 
+def _trial_has_catalogue(db: DBSession, trial_id: int) -> bool:
+    return bool(
+        db.query(CatalogueEntry.id).filter(CatalogueEntry.trial_id == trial_id).first()
+    )
+
+
 @router.post("/s/{uuid}/trials/{trial_id}/refresh")
-def refresh_trial(uuid: str, trial_id: int, db: DBSession = Depends(get_db)):
+def refresh_trial(
+    uuid: str,
+    trial_id: int,
+    overwrite: bool = Form(False),
+    db: DBSession = Depends(get_db),
+):
     _get_session(uuid, db)
     trial = db.query(Trial).filter(Trial.id == trial_id).first()
     if not trial:
         raise HTTPException(status_code=404, detail="Trial not found")
+
+    # Catalogue data is shared by every user entered in this trial and is costly
+    # to regenerate (AI PDF parsing). Don't clobber it on a refresh unless the
+    # user has explicitly confirmed the overwrite.
+    if _trial_has_catalogue(db, trial_id) and not overwrite:
+        log.info("refresh_trial: overwrite not confirmed, skipping refresh for trial_id=%s", trial_id)
+        return RedirectResponse(
+            url=f"/s/{uuid}/trials/{trial_id}?overwrite_blocked=1", status_code=303
+        )
 
     try:
         from app.queue import get_queue
@@ -96,11 +117,20 @@ async def upload_catalogue(
     uuid: str,
     trial_id: int,
     file: UploadFile = File(...),
+    overwrite: bool = Form(False),
     db: DBSession = Depends(get_db),
 ):
     _get_session(uuid, db)
     if not db.query(Trial).filter(Trial.id == trial_id).first():
         raise HTTPException(status_code=404, detail="Trial not found")
+
+    # An existing catalogue is shared across all users entered in this trial and
+    # is costly to regenerate. Require explicit confirmation before overwriting.
+    if _trial_has_catalogue(db, trial_id) and not overwrite:
+        log.info("upload_catalogue: overwrite not confirmed, skipping upload for trial_id=%s", trial_id)
+        return RedirectResponse(
+            url=f"/s/{uuid}/trials/{trial_id}?overwrite_blocked=1", status_code=303
+        )
 
     data = await file.read()
     if not data:
