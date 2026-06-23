@@ -10,9 +10,11 @@ import pytest
 from app.scraper.openrouter_catalogue import (
     OpenRouterApiError,
     _absolute_page_range,
+    _call_openrouter,
     _extract_chunk_resilient,
     _page_range_start,
     build_request_payload,
+    extract_catalogue_from_pdf,
     normalize_openrouter_entries,
     _normalize_event_name,
 )
@@ -117,6 +119,18 @@ def test_normalize_duplicate_rows_dropped():
     entries, failures = normalize_openrouter_entries(raw)
     assert failures == 0
     assert len(entries) == 1
+
+
+def test_normalize_duplicate_rows_match_database_key():
+    raw = [
+        _raw_entry(ring_number="Ring 1", height_group=200),
+        _raw_entry(ring_number="Ring 2", height_group=300),
+    ]
+    entries, failures = normalize_openrouter_entries(raw)
+    assert failures == 0
+    assert len(entries) == 1
+    assert entries[0]["ring_number"] == "1"
+    assert entries[0]["height_group"] == 200
 
 
 def test_normalize_run_position_recomputed_within_group():
@@ -234,6 +248,33 @@ def test_extract_chunk_resilient_api_error_fails_fast():
     asyncio.run(run())
 
 
+def test_call_openrouter_non_json_http_error_is_api_error(monkeypatch):
+    class FakeResponse:
+        status_code = 502
+        text = "<html>bad gateway</html>"
+
+        def json(self):
+            raise json.JSONDecodeError("bad", self.text, 0)
+
+    class FakeClient:
+        def __init__(self, *, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("app.scraper.openrouter_catalogue.httpx.AsyncClient", FakeClient)
+
+    with pytest.raises(OpenRouterApiError, match="HTTP 502"):
+        asyncio.run(_call_openrouter({"messages": []}, api_key="test-key"))
+
+
 def test_extract_chunk_resilient_split_uses_absolute_page_range():
     from pypdf import PdfWriter
 
@@ -246,7 +287,14 @@ def test_extract_chunk_resilient_split_uses_absolute_page_range():
 
     call_ranges: list[str | None] = []
 
-    async def fake_extract(pdf_data, filename, *, api_key, page_range=None, state_hint=None):
+    async def fake_extract(
+        pdf_data,
+        filename,
+        *,
+        api_key,
+        page_range=None,
+        state_hint=None,
+    ):
         call_ranges.append(page_range)
         if page_range == "13-16":
             raise json.JSONDecodeError("truncated", "", 0)
@@ -275,6 +323,60 @@ def test_normalize_empty_input():
     assert failures == 0
 
 
+def test_extract_catalogue_rejects_more_invalid_than_valid(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+    raw_entries = [
+        _raw_entry(cat_number="201"),
+        _raw_entry(cat_number="", dog_name="Missing cat"),
+        _raw_entry(cat_number="202", height_group=150),
+    ]
+
+    with patch(
+        "app.scraper.openrouter_catalogue.split_pdf_into_chunks",
+        return_value=[("catalogue.pdf", b"%PDF-1.4 test", "1-1")],
+    ), patch(
+        "app.scraper.openrouter_catalogue._extract_chunk_resilient",
+        new_callable=AsyncMock,
+        return_value=raw_entries,
+    ):
+        with pytest.raises(ValueError, match="too many invalid entries"):
+            asyncio.run(extract_catalogue_from_pdf(b"%PDF-1.4 test"))
+
+
+def test_extract_catalogue_uses_configured_chunk_concurrency(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+    monkeypatch.setenv("OPENROUTER_MAX_CONCURRENCY", "2")
+    chunks = [
+        ("catalogue-pages-1-1.pdf", b"one", "1-1"),
+        ("catalogue-pages-2-2.pdf", b"two", "2-2"),
+        ("catalogue-pages-3-3.pdf", b"three", "3-3"),
+    ]
+    active = 0
+    max_active = 0
+
+    async def fake_extract(pdf_data, filename, *, api_key, page_range=None, state_hint=None):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return [_raw_entry(cat_number=page_range.replace("-", ""))]
+
+    with patch(
+        "app.scraper.openrouter_catalogue.split_pdf_into_chunks",
+        return_value=chunks,
+    ), patch(
+        "app.scraper.openrouter_catalogue._extract_chunk_resilient",
+        side_effect=fake_extract,
+    ):
+        entries = asyncio.run(extract_catalogue_from_pdf(b"%PDF-1.4 test"))
+
+    assert max_active == 2
+    assert [e["cat_number"] for e in entries] == ["11", "22", "33"]
+
+
 def test_parse_catalogue_pdf_bytes_openrouter_disabled_uses_legacy(monkeypatch):
     legacy_entries = [{"event_name": "Legacy", "cat_number": "201"}]
     pdf_data = b"%PDF-1.4 test"
@@ -300,6 +402,34 @@ def test_parse_catalogue_pdf_bytes_openrouter_failure_falls_back(monkeypatch):
         "app.scraper.openrouter_catalogue.extract_catalogue_from_pdf",
         new_callable=AsyncMock,
         side_effect=RuntimeError("API down"),
+    ), patch(
+        "app.scraper.catalogue.parse_catalogue_pdf", return_value=legacy_entries
+    ) as mock_legacy:
+        result = asyncio.run(parse_catalogue_pdf_bytes(pdf_data))
+
+    assert result == legacy_entries
+    mock_legacy.assert_called_once_with(pdf_data)
+
+
+def test_parse_catalogue_pdf_bytes_partial_openrouter_falls_back(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_ENABLED", "true")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+    legacy_entries = [{"event_name": "Fallback", "cat_number": "301"}]
+    raw_entries = [
+        _raw_entry(cat_number="201"),
+        _raw_entry(cat_number=""),
+        _raw_entry(cat_number="202", height_group=150),
+    ]
+    pdf_data = b"%PDF-1.4 test"
+
+    with patch(
+        "app.scraper.openrouter_catalogue.split_pdf_into_chunks",
+        return_value=[("catalogue.pdf", pdf_data, "1-1")],
+    ), patch(
+        "app.scraper.openrouter_catalogue._extract_chunk_resilient",
+        new_callable=AsyncMock,
+        return_value=raw_entries,
     ), patch(
         "app.scraper.catalogue.parse_catalogue_pdf", return_value=legacy_entries
     ) as mock_legacy:

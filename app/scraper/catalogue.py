@@ -418,15 +418,22 @@ async def parse_catalogue_pdf_bytes(
     catalogue_url: str | None = None,
 ) -> list[dict]:
     """Parse PDF catalogue bytes, preferring OpenRouter when enabled."""
-    from app.scraper.openrouter_catalogue import extract_catalogue_from_pdf, is_openrouter_enabled
+    from app.scraper.openrouter_catalogue import (
+        extract_catalogue_from_pdf,
+        extraction_timeout_seconds,
+        is_openrouter_enabled,
+    )
 
     if is_openrouter_enabled():
         try:
-            return await extract_catalogue_from_pdf(
-                data,
-                filename=filename,
-                trial_external_id=trial_external_id,
-                catalogue_url=catalogue_url,
+            return await asyncio.wait_for(
+                extract_catalogue_from_pdf(
+                    data,
+                    filename=filename,
+                    trial_external_id=trial_external_id,
+                    catalogue_url=catalogue_url,
+                ),
+                timeout=extraction_timeout_seconds(),
             )
         except Exception:
             log.warning(

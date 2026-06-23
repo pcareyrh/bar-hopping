@@ -12,6 +12,7 @@ from app.queue import set_sync_status, get_queue
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("worker")
+DOC_REFRESH_JOB_TIMEOUT = 900
 
 
 def sync_session_job(session_uuid: str) -> None:
@@ -146,7 +147,12 @@ def sync_session_job(session_uuid: str) -> None:
                 ).first()
                 if needs_cat or needs_sched:
                     log.info("sync_session_job: enqueuing doc refresh for trial %s", trial.external_id)
-                    queue.enqueue("app.worker.refresh_trial_docs_job", trial.id, session_uuid, job_timeout=300)
+                    queue.enqueue(
+                        "app.worker.refresh_trial_docs_job",
+                        trial.id,
+                        session_uuid,
+                        job_timeout=DOC_REFRESH_JOB_TIMEOUT,
+                    )
 
             log.info("sync_session_job: done for %s", session_uuid)
         finally:

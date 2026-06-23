@@ -128,6 +128,10 @@ def _max_concurrency() -> int:
     return max(1, _env_int("OPENROUTER_MAX_CONCURRENCY", 3))
 
 
+def extraction_timeout_seconds() -> int:
+    return max(1, _env_int("OPENROUTER_EXTRACTION_TIMEOUT", 240))
+
+
 def extraction_prompt(*, page_range: str | None = None, state_hint: str | None = None) -> str:
     prompt = (
         "Extract every TopDog agility catalogue run-order entry from this PDF.\n\n"
@@ -247,9 +251,7 @@ def _entry_identity(entry: dict) -> tuple:
     return (
         entry["day"],
         entry["event_name"],
-        entry["height_group"],
         entry["cat_number"],
-        entry.get("ring_number"),
     )
 
 
@@ -376,9 +378,31 @@ async def _call_openrouter(payload: dict[str, Any], *, api_key: str) -> list[dic
 
     async with httpx.AsyncClient(timeout=300) as client:
         resp = await client.post(OPENROUTER_API_URL, headers=headers, json=payload)
-        body = resp.json()
 
-    if resp.status_code != 200 or body.get("error"):
+    if resp.status_code != 200:
+        try:
+            error_body = resp.json()
+        except json.JSONDecodeError:
+            detail = resp.text.strip() or "empty response body"
+            raise OpenRouterApiError(
+                f"OpenRouter request failed with HTTP {resp.status_code}: {detail}"
+            ) from None
+        if not isinstance(error_body, dict):
+            raise OpenRouterApiError(f"OpenRouter request failed with HTTP {resp.status_code}")
+        raise OpenRouterApiError(
+            f"OpenRouter request failed with HTTP {resp.status_code}: "
+            f"{_openrouter_error_message(error_body)}"
+        )
+
+    try:
+        body = resp.json()
+    except json.JSONDecodeError as exc:
+        raise OpenRouterApiError("OpenRouter returned a non-JSON response") from exc
+
+    if not isinstance(body, dict):
+        raise OpenRouterApiError("OpenRouter returned an invalid response")
+
+    if body.get("error"):
         raise OpenRouterApiError(_openrouter_error_message(body))
 
     choices = body.get("choices") or []
@@ -520,22 +544,40 @@ async def extract_catalogue_from_pdf(
 
     raw_entries: list[dict] = []
     state_hint: str | None = None
-    for chunk_name, chunk_bytes, page_range in chunks:
+    concurrency = min(_max_concurrency(), len(chunks))
+
+    async def _extract_logged_chunk(
+        chunk_name: str,
+        chunk_bytes: bytes,
+        page_range: str,
+        hint: str | None,
+    ) -> list[dict]:
         chunk_entries = await _extract_chunk_resilient(
             chunk_bytes,
             chunk_name,
             api_key=api_key,
             page_range=page_range,
-            state_hint=state_hint,
+            state_hint=hint,
         )
-        raw_entries.extend(chunk_entries)
-        state_hint = _state_hint_from_entries(chunk_entries) or state_hint
         log.info(
             "openrouter_catalogue: chunk trial=%s pages=%s entries=%d",
             trial_external_id or "?",
             page_range,
             len(chunk_entries),
         )
+        return chunk_entries
+
+    for idx in range(0, len(chunks), concurrency):
+        batch = chunks[idx : idx + concurrency]
+        batch_results = await asyncio.gather(
+            *(
+                _extract_logged_chunk(chunk_name, chunk_bytes, page_range, state_hint)
+                for chunk_name, chunk_bytes, page_range in batch
+            )
+        )
+        for chunk_entries in batch_results:
+            raw_entries.extend(chunk_entries)
+        state_hint = _state_hint_from_entries(batch_results[-1]) or state_hint
 
     entries, failure_count = normalize_openrouter_entries(raw_entries)
 
@@ -550,5 +592,10 @@ async def extract_catalogue_from_pdf(
 
     if not entries:
         raise ValueError("OpenRouter extraction produced no valid entries")
+    if failure_count >= len(entries):
+        raise ValueError(
+            "OpenRouter extraction produced too many invalid entries "
+            f"({failure_count} invalid, {len(entries)} valid)"
+        )
 
     return entries
