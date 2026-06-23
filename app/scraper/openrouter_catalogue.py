@@ -60,6 +60,27 @@ CATALOGUE_JSON_SCHEMA: dict[str, Any] = {
 
 _RE_RING_NUMBER = re.compile(r"(\d+)")
 _RE_JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
+_RE_PAGE_RANGE_START = re.compile(r"^(\d+)")
+
+
+class OpenRouterApiError(Exception):
+    """OpenRouter HTTP, auth, provider, or configuration failure."""
+
+
+class OpenRouterParseError(Exception):
+    """Malformed or truncated model JSON output."""
+
+
+def _page_range_start(page_range: str | None) -> int:
+    if not page_range:
+        return 1
+    match = _RE_PAGE_RANGE_START.match(page_range.strip())
+    return int(match.group(1)) if match else 1
+
+
+def _absolute_page_range(page_offset: int, local_start: int, local_end: int) -> str:
+    """Convert local 0-based half-open indices to absolute 1-based inclusive range."""
+    return f"{page_offset + local_start}-{page_offset + local_end - 1}"
 
 
 def _env(name: str, default: str = "") -> str:
@@ -333,7 +354,7 @@ def _parse_response_content(content: str) -> list[dict]:
     payload = json.loads(text)
     entries = payload.get("entries")
     if not isinstance(entries, list):
-        raise ValueError("OpenRouter response missing entries array")
+        raise OpenRouterParseError("OpenRouter response missing entries array")
     return entries
 
 
@@ -358,16 +379,16 @@ async def _call_openrouter(payload: dict[str, Any], *, api_key: str) -> list[dic
         body = resp.json()
 
     if resp.status_code != 200 or body.get("error"):
-        raise ValueError(_openrouter_error_message(body))
+        raise OpenRouterApiError(_openrouter_error_message(body))
 
     choices = body.get("choices") or []
     if not choices:
-        raise ValueError("OpenRouter response missing choices")
+        raise OpenRouterApiError("OpenRouter response missing choices")
 
     message = choices[0].get("message") or {}
     content = message.get("content")
     if not content:
-        raise ValueError("OpenRouter response missing message content")
+        raise OpenRouterApiError("OpenRouter response missing message content")
 
     return _parse_response_content(content)
 
@@ -405,14 +426,15 @@ async def _extract_chunk_resilient(
             page_range=page_range,
             state_hint=state_hint,
         )
-    except (json.JSONDecodeError, ValueError) as exc:
+    except (json.JSONDecodeError, OpenRouterParseError) as exc:
         from pypdf import PdfReader
 
         reader = PdfReader(io.BytesIO(pdf_data))
         page_count = len(reader.pages)
         if page_count <= 1:
-            raise ValueError(f"OpenRouter chunk failed for {filename}: {exc}") from exc
+            raise OpenRouterParseError(f"OpenRouter chunk failed for {filename}: {exc}") from exc
 
+        page_offset = _page_range_start(page_range)
         mid = page_count // 2
         log.warning(
             "openrouter_catalogue: chunk %s failed (%s); splitting into %d + %d pages",
@@ -422,16 +444,17 @@ async def _extract_chunk_resilient(
             page_count - mid,
         )
 
-        def _subchunk(start: int, end: int) -> tuple[str, bytes, str]:
+        def _subchunk(local_start: int, local_end: int) -> tuple[str, bytes, str]:
             from pypdf import PdfWriter
 
             writer = PdfWriter()
-            for page_idx in range(start, end):
+            for page_idx in range(local_start, local_end):
                 writer.add_page(reader.pages[page_idx])
             buf = io.BytesIO()
             writer.write(buf)
-            sub_name = f"{filename.rsplit('.', 1)[0]}-split-{start + 1}-{end}.pdf"
-            return sub_name, buf.getvalue(), f"{start + 1}-{end}"
+            abs_range = _absolute_page_range(page_offset, local_start, local_end)
+            sub_name = f"{filename.rsplit('.', 1)[0]}-split-{abs_range}.pdf"
+            return sub_name, buf.getvalue(), abs_range
 
         left_name, left_bytes, left_range = _subchunk(0, mid)
         right_name, right_bytes, right_range = _subchunk(mid, page_count)

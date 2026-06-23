@@ -39,8 +39,9 @@ variable "openrouter_enabled" {
 }
 
 variable "openrouter_api_key" {
-  type    = string
-  default = ""
+  type      = string
+  default   = ""
+  sensitive = true
 }
 
 variable "openrouter_model" {
@@ -56,6 +57,11 @@ variable "openrouter_pdf_engine" {
 variable "openrouter_pdf_pages_per_chunk" {
   type    = string
   default = "8"
+}
+
+variable "openrouter_pdf_chunk_overlap" {
+  type    = string
+  default = "0"
 }
 
 variable "openrouter_max_tokens" {
@@ -275,6 +281,7 @@ EOH
         OPENROUTER_MODEL     = var.openrouter_model
         OPENROUTER_PDF_ENGINE = var.openrouter_pdf_engine
         OPENROUTER_PDF_PAGES_PER_CHUNK = var.openrouter_pdf_pages_per_chunk
+        OPENROUTER_PDF_CHUNK_OVERLAP = var.openrouter_pdf_chunk_overlap
         OPENROUTER_MAX_TOKENS = var.openrouter_max_tokens
         OPENROUTER_MAX_CONCURRENCY = var.openrouter_max_concurrency
       }

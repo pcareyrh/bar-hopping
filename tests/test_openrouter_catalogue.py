@@ -1,11 +1,17 @@
 """Unit tests for OpenRouter catalogue extraction and parse_catalogue_pdf_bytes fallback."""
 import asyncio
 import base64
+import io
+import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.scraper.openrouter_catalogue import (
+    OpenRouterApiError,
+    _absolute_page_range,
+    _extract_chunk_resilient,
+    _page_range_start,
     build_request_payload,
     normalize_openrouter_entries,
     _normalize_event_name,
@@ -197,6 +203,70 @@ def test_normalize_event_name_from_bare_code():
     assert _normalize_event_name("AD1") == "Novice Agility (AD1)"
     assert _normalize_event_name("JDO") == "Open Jumping"
     assert _normalize_event_name("Agility Dog (AD2)") == "Novice Agility (AD2)"
+
+
+def test_page_range_start_parses_absolute_offset():
+    assert _page_range_start("13-24") == 13
+    assert _page_range_start(None) == 1
+
+
+def test_absolute_page_range_uses_document_offset():
+    assert _absolute_page_range(13, 0, 6) == "13-18"
+    assert _absolute_page_range(13, 6, 12) == "19-24"
+
+
+def test_extract_chunk_resilient_api_error_fails_fast():
+    pdf_data = b"%PDF-1.4 test"
+
+    async def run():
+        with patch(
+            "app.scraper.openrouter_catalogue._extract_chunk",
+            new_callable=AsyncMock,
+            side_effect=OpenRouterApiError("Invalid API key"),
+        ):
+            with pytest.raises(OpenRouterApiError, match="Invalid API key"):
+                await _extract_chunk_resilient(
+                    pdf_data,
+                    "catalogue.pdf",
+                    api_key="test-key",
+                )
+
+    asyncio.run(run())
+
+
+def test_extract_chunk_resilient_split_uses_absolute_page_range():
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(4):
+        writer.add_blank_page(width=200, height=200)
+    buf = io.BytesIO()
+    writer.write(buf)
+    pdf_data = buf.getvalue()
+
+    call_ranges: list[str | None] = []
+
+    async def fake_extract(pdf_data, filename, *, api_key, page_range=None, state_hint=None):
+        call_ranges.append(page_range)
+        if page_range == "13-16":
+            raise json.JSONDecodeError("truncated", "", 0)
+        return [{"event_name": "Novice Agility (AD1)", "cat_number": "500", "day": 1,
+                 "height_group": 500, "run_position": 1, "height_group_total": 1,
+                 "nfc": False, "dog_name": "Dog", "handler_name": "Handler", "ring_number": "1"}]
+
+    with patch("app.scraper.openrouter_catalogue._extract_chunk", side_effect=fake_extract):
+        entries = asyncio.run(
+            _extract_chunk_resilient(
+                pdf_data,
+                "catalogue-pages-13-16.pdf",
+                api_key="test-key",
+                page_range="13-16",
+            )
+        )
+
+    assert len(entries) == 2
+    assert "13-14" in call_ranges
+    assert "15-16" in call_ranges
 
 
 def test_normalize_empty_input():
