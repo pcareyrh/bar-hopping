@@ -15,6 +15,7 @@ from app.scraper.openrouter_catalogue import (
     _page_range_start,
     build_request_payload,
     extract_catalogue_from_pdf,
+    extraction_timeout_seconds,
     normalize_openrouter_entries,
     _normalize_event_name,
 )
@@ -80,6 +81,12 @@ def test_build_request_payload_file_parser_plugin(monkeypatch):
 def test_build_request_payload_requires_model():
     with pytest.raises(ValueError, match="OPENROUTER_MODEL"):
         build_request_payload(b"pdf", "cat.pdf")
+
+
+def test_extraction_timeout_defaults_to_catalogue_job_budget(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_EXTRACTION_TIMEOUT", raising=False)
+
+    assert extraction_timeout_seconds() == 900
 
 
 def test_normalize_valid_entries():
@@ -344,7 +351,7 @@ def test_extract_catalogue_rejects_more_invalid_than_valid(monkeypatch):
             asyncio.run(extract_catalogue_from_pdf(b"%PDF-1.4 test"))
 
 
-def test_extract_catalogue_uses_configured_chunk_concurrency(monkeypatch):
+def test_extract_catalogue_passes_previous_chunk_hint(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
     monkeypatch.setenv("OPENROUTER_MAX_CONCURRENCY", "2")
@@ -355,14 +362,22 @@ def test_extract_catalogue_uses_configured_chunk_concurrency(monkeypatch):
     ]
     active = 0
     max_active = 0
+    calls = []
 
     async def fake_extract(pdf_data, filename, *, api_key, page_range=None, state_hint=None):
         nonlocal active, max_active
+        calls.append((page_range, state_hint))
         active += 1
         max_active = max(max_active, active)
         await asyncio.sleep(0)
         active -= 1
-        return [_raw_entry(cat_number=page_range.replace("-", ""))]
+        return [
+            _raw_entry(
+                cat_number=page_range.replace("-", ""),
+                event_name=f"Event {page_range}",
+                ring_number=f"Ring {page_range}",
+            )
+        ]
 
     with patch(
         "app.scraper.openrouter_catalogue.split_pdf_into_chunks",
@@ -373,7 +388,12 @@ def test_extract_catalogue_uses_configured_chunk_concurrency(monkeypatch):
     ):
         entries = asyncio.run(extract_catalogue_from_pdf(b"%PDF-1.4 test"))
 
-    assert max_active == 2
+    assert max_active == 1
+    assert calls == [
+        ("1-1", None),
+        ("2-2", "day=1, event_name=Event 1-1, height_group=200, ring_number=Ring 1-1"),
+        ("3-3", "day=1, event_name=Event 2-2, height_group=200, ring_number=Ring 2-2"),
+    ]
     assert [e["cat_number"] for e in entries] == ["11", "22", "33"]
 
 

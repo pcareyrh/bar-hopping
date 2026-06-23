@@ -1,7 +1,6 @@
 """OpenRouter-backed TopDog catalogue PDF extraction."""
 from __future__ import annotations
 
-import asyncio
 import base64
 import hashlib
 import io
@@ -129,7 +128,7 @@ def _max_concurrency() -> int:
 
 
 def extraction_timeout_seconds() -> int:
-    return max(1, _env_int("OPENROUTER_EXTRACTION_TIMEOUT", 240))
+    return max(1, _env_int("OPENROUTER_EXTRACTION_TIMEOUT", 900))
 
 
 def extraction_prompt(*, page_range: str | None = None, state_hint: str | None = None) -> str:
@@ -544,7 +543,6 @@ async def extract_catalogue_from_pdf(
 
     raw_entries: list[dict] = []
     state_hint: str | None = None
-    concurrency = min(_max_concurrency(), len(chunks))
 
     async def _extract_logged_chunk(
         chunk_name: str,
@@ -567,17 +565,15 @@ async def extract_catalogue_from_pdf(
         )
         return chunk_entries
 
-    for idx in range(0, len(chunks), concurrency):
-        batch = chunks[idx : idx + concurrency]
-        batch_results = await asyncio.gather(
-            *(
-                _extract_logged_chunk(chunk_name, chunk_bytes, page_range, state_hint)
-                for chunk_name, chunk_bytes, page_range in batch
-            )
+    for chunk_name, chunk_bytes, page_range in chunks:
+        chunk_entries = await _extract_logged_chunk(
+            chunk_name,
+            chunk_bytes,
+            page_range,
+            state_hint,
         )
-        for chunk_entries in batch_results:
-            raw_entries.extend(chunk_entries)
-        state_hint = _state_hint_from_entries(batch_results[-1]) or state_hint
+        raw_entries.extend(chunk_entries)
+        state_hint = _state_hint_from_entries(chunk_entries) or state_hint
 
     entries, failure_count = normalize_openrouter_entries(raw_entries)
 
