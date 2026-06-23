@@ -133,6 +133,51 @@
 
 </form>
 
+{% if trial_lunch_breaks %}
+<div class="mt-8 space-y-5">
+  <div>
+    <p class="text-sm font-semibold text-gray-700">Lunch breaks</p>
+    <p class="text-xs text-gray-400">Set when each ring breaks for lunch. Breaks show on the Predicted Schedule.</p>
+  </div>
+
+  {% for tlb in trial_lunch_breaks %}
+  {% set trial = tlb.trial %}
+  {% set configs = tlb.configs %}
+  {% set multi_day = (configs | map(attribute='day') | unique | list | length) > 1 %}
+  <div class="space-y-2">
+    <p class="text-xs font-semibold text-gray-600 uppercase tracking-wider">{{ trial.name }}</p>
+    {% for lb in configs %}
+    {% set form_id = "lb_" ~ trial.id ~ "_" ~ lb.day ~ "_" ~ (lb.ring | replace(" ", "_")) %}
+    <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/schedule/lunch-break" class="bg-white border border-gray-200 rounded-2xl p-4">
+      <input type="hidden" name="day" value="{{ lb.day }}" />
+      <input type="hidden" name="ring" value="{{ lb.ring }}" />
+      <p class="text-xs text-gray-500 mb-2">{% if multi_day %}Day {{ lb.day }} · {% endif %}{{ lb.ring }}</p>
+      <div class="flex items-center gap-3 flex-wrap">
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-gray-600" for="{{ form_id }}_at">Time</label>
+          <input type="time" id="{{ form_id }}_at" name="lunch_break_at"
+            value="{{ lb.lunch_break_at.strftime('%H:%M') if lb.lunch_break_at else '' }}"
+            class="border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand" />
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-xs text-gray-600" for="{{ form_id }}_mins">Duration</label>
+          <input type="number" id="{{ form_id }}_mins" name="lunch_break_mins" min="0" max="480"
+            value="{{ lb.lunch_break_mins }}"
+            class="w-16 border border-gray-200 rounded-xl px-3 py-2 text-sm text-center focus:outline-none focus:ring-2 focus:ring-brand" />
+          <span class="text-xs text-gray-400">min</span>
+        </div>
+        <button type="submit" class="bg-brand text-white px-4 py-2 rounded-xl text-xs font-semibold hover:bg-brand-dark transition active:scale-95">Save</button>
+        {% if lb.lunch_break_at %}
+        <button type="submit" name="lunch_break_at" value="" formnovalidate class="text-xs text-gray-400 hover:text-red-400 transition">Clear</button>
+        {% endif %}
+      </div>
+    </form>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 <div class="mt-8 pt-6 border-t border-gray-200 flex items-center justify-between text-xs text-gray-400">
   <span>v{{ APP_VERSION }} · not affiliated with topdogevents.com.au</span>
   <form method="POST" action="/s/{{ uuid }}/logout">

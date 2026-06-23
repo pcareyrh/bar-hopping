@@ -7,7 +7,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session as DBSession
 
 from app.database import get_db
-from app.models import Session
+from app.models import Session, Trial
 from app import crypto
 
 log = logging.getLogger(__name__)
@@ -108,9 +108,26 @@ def sync_status(uuid: str, request: Request):
 @router.get("/s/{uuid}/settings", response_class=HTMLResponse)
 def settings_page(uuid: str, request: Request, db: DBSession = Depends(get_db)):
     session = _get_session(uuid, db)
+
+    # Lunch breaks are per-trial (one per day/ring with runs). Surface them here
+    # for every trial the user is entered in so they can be adjusted alongside
+    # the other timing settings.
+    from app.routers.schedule import lunch_break_configs_for_trial
+
+    trial_ids = {e.trial_id for e in session.entries}
+    trials = (
+        db.query(Trial).filter(Trial.id.in_(trial_ids)).order_by(Trial.start_date).all()
+        if trial_ids else []
+    )
+    trial_lunch_breaks = []
+    for trial in trials:
+        configs = lunch_break_configs_for_trial(trial, db)
+        if configs:
+            trial_lunch_breaks.append({"trial": trial, "configs": configs})
+
     return templates.TemplateResponse(
         request, "settings.html",
-        {"session": session, "uuid": uuid},
+        {"session": session, "uuid": uuid, "trial_lunch_breaks": trial_lunch_breaks},
     )
 
 
