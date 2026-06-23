@@ -359,6 +359,7 @@ def _compute_catalogue_blocks(
                         "first_run": lunch_start,
                         "last_run": cursor,
                         "is_lunch_break": True,
+                        "duration_mins": lb_mins,
                     })
                     lunch_injected = True
 

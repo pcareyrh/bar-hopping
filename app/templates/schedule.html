@@ -51,9 +51,24 @@
   <div class="space-y-1">
     {% for b in day_blocks %}
     {% if b.is_lunch_break %}
-    <div class="flex items-center justify-between border border-dashed border-amber-200 rounded-lg px-3 py-1.5 text-xs text-amber-700 bg-amber-50">
-      <p>Lunch break · {{ b.ring }} ring</p>
-      <p class="font-mono shrink-0 ml-2">{{ b.first_run_str }}<span class="text-amber-400"> – {{ b.last_run_str }}</span></p>
+    <div class="flex items-center justify-between border-2 border-amber-300 rounded-lg px-3 py-2.5 text-amber-900 bg-amber-100 shadow-sm my-2">
+      <div class="flex items-center gap-2.5 min-w-0">
+        <span class="shrink-0 flex items-center justify-center w-8 h-8 rounded-full bg-amber-200 text-amber-700">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-5 h-5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+        </span>
+        <div class="min-w-0">
+          <p class="font-bold text-sm flex items-center gap-1.5 flex-wrap">
+            Lunch Break
+            {% if b.duration_mins %}
+            <span class="text-xs font-semibold bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded">{{ b.duration_mins }} min</span>
+            {% endif %}
+          </p>
+          <p class="text-xs text-amber-700">{{ b.ring }}</p>
+        </div>
+      </div>
+      <p class="font-mono text-sm font-semibold shrink-0 ml-2">{{ b.first_run_str }}<span class="text-amber-500"> – {{ b.last_run_str }}</span></p>
     </div>
     {% else %}
     {% if b.setup_start %}
