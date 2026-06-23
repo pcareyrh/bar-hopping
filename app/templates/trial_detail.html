@@ -16,7 +16,7 @@
   <a href="/s/{{ uuid }}/trials" class="text-sm text-brand hover:underline">&larr; Trials</a>
 </div>
 
-<div class="flex items-start justify-between gap-2 mb-4">
+<div class="flex items-start justify-between gap-2 mb-3">
   <div>
     <h1 class="text-xl font-bold leading-snug">{{ trial.name }}</h1>
     {% if trial.venue %}
@@ -26,38 +26,50 @@
     <p class="text-sm text-gray-500">{{ trial.start_date.strftime("%-d %B %Y") }}</p>
     {% endif %}
   </div>
-  <div class="flex flex-col gap-1 items-end shrink-0">
-    <a
-      href="/s/{{ uuid }}/trials/{{ trial.id }}/schedule"
-      class="bg-brand text-white text-sm px-3 py-1.5 rounded-lg font-medium hover:bg-brand-dark transition"
+  <a
+    href="/s/{{ uuid }}/trials/{{ trial.id }}/schedule"
+    class="shrink-0 inline-flex items-center min-h-[44px] bg-brand text-white text-sm px-4 py-2.5 rounded-lg font-medium hover:bg-brand-dark active:bg-brand-dark transition touch-manipulation"
+  >
+    Schedule &rarr;
+  </a>
+</div>
+
+<div class="flex flex-wrap gap-2 mb-4">
+  <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/refresh" class="flex-1 min-w-[9rem]"
+        onsubmit="return confirmCatalogueOverwrite({{ 'true' if has_catalogue else 'false' }}, 'refreshed documents')">
+    {% if has_catalogue %}
+    <input type="hidden" name="overwrite" value="1">
+    {% endif %}
+    <button
+      type="submit"
+      class="w-full inline-flex items-center justify-center gap-2 min-h-[44px] whitespace-nowrap bg-white border border-gray-300 text-gray-700 text-sm font-medium px-4 py-2.5 rounded-lg shadow-sm hover:bg-gray-50 active:bg-gray-100 transition touch-manipulation"
     >
-      Schedule &rarr;
-    </a>
-    <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/refresh"
-          onsubmit="return confirmCatalogueOverwrite({{ 'true' if has_catalogue else 'false' }}, 'refreshed documents')">
-      {% if has_catalogue %}
-      <input type="hidden" name="overwrite" value="1">
-      {% endif %}
-      <button type="submit" class="text-xs text-gray-400 hover:text-gray-600 underline">
-        Refresh docs
-      </button>
-    </form>
-    <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/upload-catalogue" enctype="multipart/form-data">
-      {% if has_catalogue %}
-      <input type="hidden" name="overwrite" value="1">
-      {% endif %}
-      <label
-        for="catalogue-file"
-        class="text-xs text-gray-400 hover:text-gray-600 underline cursor-pointer"
-        tabindex="0"
-        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();document.getElementById('catalogue-file').click()}"
-      >
-        Upload catalogue
-        <input type="file" id="catalogue-file" name="file" accept=".xlsx,.pdf" class="sr-only" tabindex="-1"
-               onchange="if(confirmCatalogueOverwrite({{ 'true' if has_catalogue else 'false' }}, 'uploaded file')){this.form.submit()}else{this.value=''}">
-      </label>
-    </form>
-  </div>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-4 h-4 shrink-0">
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M16.023 9.348h4.992V4.356M2.985 19.644v-4.992h4.992m-4.992 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.183"/>
+      </svg>
+      Refresh docs
+    </button>
+  </form>
+  <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/upload-catalogue" enctype="multipart/form-data" class="flex-1 min-w-[9rem]">
+    {% if has_catalogue %}
+    <input type="hidden" name="overwrite" value="1">
+    {% endif %}
+    <label
+      for="catalogue-file"
+      class="w-full inline-flex items-center justify-center gap-2 min-h-[44px] whitespace-nowrap bg-white border border-gray-300 text-gray-700 text-sm font-medium px-4 py-2.5 rounded-lg shadow-sm hover:bg-gray-50 active:bg-gray-100 transition touch-manipulation cursor-pointer"
+      tabindex="0"
+      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();document.getElementById('catalogue-file').click()}"
+    >
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="w-4 h-4 shrink-0">
+        <path stroke-linecap="round" stroke-linejoin="round"
+              d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
+      </svg>
+      Upload catalogue
+      <input type="file" id="catalogue-file" name="file" accept=".xlsx,.pdf" class="sr-only" tabindex="-1"
+             onchange="if(confirmCatalogueOverwrite({{ 'true' if has_catalogue else 'false' }}, 'uploaded file')){this.form.submit()}else{this.value=''}">
+    </label>
+  </form>
 </div>
 
 {% if refreshing %}
