@@ -1,4 +1,5 @@
 """Parse FINAL catalogue files (.xlsx or .pdf) from TopDog, and HTML entries summary pages."""
+import asyncio
 import io
 import logging
 import re
@@ -409,7 +410,68 @@ def _split_dog_handler_nationals(words: list[dict]) -> tuple[str | None, str | N
     return None, None
 
 
-async def download_and_parse_catalogue(url: str) -> list[dict]:
+async def parse_catalogue_pdf_bytes(
+    data: bytes,
+    *,
+    filename: str = "catalogue.pdf",
+    trial_external_id: str | None = None,
+    catalogue_url: str | None = None,
+) -> list[dict]:
+    """Parse PDF catalogue bytes, preferring OpenRouter when enabled."""
+    from app.scraper.openrouter_catalogue import extract_catalogue_from_pdf, is_openrouter_enabled
+
+    if is_openrouter_enabled():
+        try:
+            return await extract_catalogue_from_pdf(
+                data,
+                filename=filename,
+                trial_external_id=trial_external_id,
+                catalogue_url=catalogue_url,
+            )
+        except Exception:
+            log.warning(
+                "OpenRouter catalogue extraction failed for trial=%s url=%s; falling back to legacy PDF parser",
+                trial_external_id or "?",
+                catalogue_url or "?",
+                exc_info=True,
+            )
+    else:
+        log.info(
+            "OpenRouter catalogue extraction disabled; using legacy PDF parser (trial=%s)",
+            trial_external_id or "?",
+        )
+
+    log.info(
+        "Parsing catalogue as legacy PDF (%d bytes, trial=%s)",
+        len(data),
+        trial_external_id or "?",
+    )
+    return parse_catalogue_pdf(data)
+
+
+def parse_catalogue_pdf_bytes_sync(
+    data: bytes,
+    *,
+    filename: str = "catalogue.pdf",
+    trial_external_id: str | None = None,
+    catalogue_url: str | None = None,
+) -> list[dict]:
+    """Sync wrapper for parse_catalogue_pdf_bytes (used by worker upload jobs)."""
+    return asyncio.run(
+        parse_catalogue_pdf_bytes(
+            data,
+            filename=filename,
+            trial_external_id=trial_external_id,
+            catalogue_url=catalogue_url,
+        )
+    )
+
+
+async def download_and_parse_catalogue(
+    url: str,
+    *,
+    trial_external_id: str | None = None,
+) -> list[dict]:
     """Download a catalogue (xlsx or PDF) and parse it."""
     async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
         resp = await client.get(url)
@@ -420,7 +482,12 @@ async def download_and_parse_catalogue(url: str) -> list[dict]:
         # Also sniff the first bytes for PDF magic number.
         if resp.content[:5] == b"%PDF-" or "pdf" in content_type:
             log.info("Parsing catalogue as PDF (%d bytes)", len(resp.content))
-            return parse_catalogue_pdf(resp.content)
+            return await parse_catalogue_pdf_bytes(
+                resp.content,
+                filename=url.rsplit("/", 1)[-1] or "catalogue.pdf",
+                trial_external_id=trial_external_id,
+                catalogue_url=url,
+            )
     log.info("Parsing catalogue as xlsx (%d bytes)", len(resp.content))
     return parse_catalogue_xlsx(io.BytesIO(resp.content))
 
