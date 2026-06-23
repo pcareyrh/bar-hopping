@@ -54,25 +54,10 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
         b["first_run_str"] = format_predicted_time(b["first_run"])
         b["last_run_str"] = format_predicted_time(b["last_run"])
 
-    seen_pairs: dict[tuple[int, str], dict] = {}
-    for b in day_blocks:
-        if not b.get("is_lunch_break"):
-            key = (b["day"], b["ring"])
-            if key not in seen_pairs:
-                lb = lunch_breaks.get(key)
-                seen_pairs[key] = {
-                    "day": b["day"],
-                    "ring": b["ring"],
-                    "lunch_break_at": lb[0] if lb else None,
-                    "lunch_break_mins": lb[1] if lb else 45,
-                }
-    lunch_break_configs = list(seen_pairs.values())
-
     available_days = sorted({b["day"] for b in day_blocks})
     selected_day = day if day in available_days else (available_days[0] if available_days else 1)
     day_dates = {b["day"]: b.get("trial_date") for b in day_blocks if not b.get("is_lunch_break")}
     day_blocks_view = [b for b in day_blocks if b["day"] == selected_day]
-    lunch_break_configs_view = [c for c in lunch_break_configs if c["day"] == selected_day]
 
     return templates.TemplateResponse(
         request, "schedule.html",
@@ -82,7 +67,6 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
             "trial": trial,
             "predictions": predictions,
             "day_blocks": day_blocks_view,
-            "lunch_break_configs": lunch_break_configs_view,
             "available_days": available_days,
             "selected_day": selected_day,
             "day_dates": day_dates,
@@ -215,7 +199,44 @@ def update_lunch_break(
         lb.lunch_break_at = None
     lb.lunch_break_mins = lunch_break_mins
     db.commit()
-    return RedirectResponse(f"/s/{uuid}/trials/{trial_id}/schedule", status_code=303)
+    return RedirectResponse(f"/s/{uuid}/settings", status_code=303)
+
+
+def lunch_break_configs_for_trial(trial: Trial, db: DBSession) -> list[dict]:
+    """Return one lunch-break config per (day, ring) pair that has runs in the
+    trial catalogue, merged with any saved TrialLunchBreak values.
+
+    Used by the settings page so users can adjust each ring's lunch break. The
+    (day, ring) pairs mirror those produced by `_compute_catalogue_blocks` —
+    ring names come from `_ring_of` — so saved breaks line up with the blocks
+    shown on the Full Day Schedule.
+    """
+    cat_entries = (
+        db.query(CatalogueEntry)
+        .filter(CatalogueEntry.trial_id == trial.id)
+        .order_by(CatalogueEntry.id)
+        .all()
+    )
+    if not cat_entries:
+        return []
+
+    lb_records = db.query(TrialLunchBreak).filter(TrialLunchBreak.trial_id == trial.id).all()
+    lunch_breaks = {(r.day, r.ring): (r.lunch_break_at, r.lunch_break_mins) for r in lb_records}
+
+    seen: dict[tuple[int, str], dict] = {}
+    for ce in cat_entries:
+        day = getattr(ce, "day", 1) or 1
+        ring = _ring_of(ce.event_name, getattr(ce, "ring_number", None))
+        key = (day, ring)
+        if key not in seen:
+            lb = lunch_breaks.get(key)
+            seen[key] = {
+                "day": day,
+                "ring": ring,
+                "lunch_break_at": lb[0] if lb else None,
+                "lunch_break_mins": lb[1] if lb else 45,
+            }
+    return [seen[k] for k in sorted(seen)]
 
 
 def _ring_of(event_name: str, ring_number: str | None = None) -> str:
