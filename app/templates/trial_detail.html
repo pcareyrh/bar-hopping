@@ -35,13 +35,17 @@
     </a>
     <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/refresh"
           onsubmit="return confirmCatalogueOverwrite({{ 'true' if has_catalogue else 'false' }}, 'refreshed documents')">
+      {% if has_catalogue %}
       <input type="hidden" name="overwrite" value="1">
+      {% endif %}
       <button type="submit" class="text-xs text-gray-400 hover:text-gray-600 underline">
         Refresh docs
       </button>
     </form>
     <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/upload-catalogue" enctype="multipart/form-data">
+      {% if has_catalogue %}
       <input type="hidden" name="overwrite" value="1">
+      {% endif %}
       <label
         for="catalogue-file"
         class="text-xs text-gray-400 hover:text-gray-600 underline cursor-pointer"
