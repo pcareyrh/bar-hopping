@@ -2,6 +2,16 @@
 {% block title %}{{ trial.name }}{% endblock %}
 
 {% block content %}
+<script>
+  function confirmCatalogueOverwrite(hasCatalogue, source) {
+    if (!hasCatalogue) return true;
+    return confirm(
+      "This trial already has catalogue data, shared with everyone entered in it.\n\n" +
+      "Re-parsing a catalogue has a real cost, so it won't be replaced automatically.\n\n" +
+      "Overwrite the existing catalogue with the " + source + "?"
+    );
+  }
+</script>
 <div class="mb-4">
   <a href="/s/{{ uuid }}/trials" class="text-sm text-brand hover:underline">&larr; Trials</a>
 </div>
@@ -25,7 +35,11 @@
 </div>
 
 <div class="flex flex-wrap gap-2 mb-4">
-  <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/refresh" class="flex-1 min-w-[9rem]">
+  <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/refresh" class="flex-1 min-w-[9rem]"
+        onsubmit="return confirmCatalogueOverwrite({{ 'true' if has_catalogue else 'false' }}, 'refreshed documents')">
+    {% if has_catalogue %}
+    <input type="hidden" name="overwrite" value="1">
+    {% endif %}
     <button
       type="submit"
       class="w-full inline-flex items-center justify-center gap-2 min-h-[44px] whitespace-nowrap bg-white border border-gray-300 text-gray-700 text-sm font-medium px-4 py-2.5 rounded-lg shadow-sm hover:bg-gray-50 active:bg-gray-100 transition touch-manipulation"
@@ -38,6 +52,9 @@
     </button>
   </form>
   <form method="POST" action="/s/{{ uuid }}/trials/{{ trial.id }}/upload-catalogue" enctype="multipart/form-data" class="flex-1 min-w-[9rem]">
+    {% if has_catalogue %}
+    <input type="hidden" name="overwrite" value="1">
+    {% endif %}
     <label
       for="catalogue-file"
       class="w-full inline-flex items-center justify-center gap-2 min-h-[44px] whitespace-nowrap bg-white border border-gray-300 text-gray-700 text-sm font-medium px-4 py-2.5 rounded-lg shadow-sm hover:bg-gray-50 active:bg-gray-100 transition touch-manipulation cursor-pointer"
@@ -49,7 +66,8 @@
               d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5"/>
       </svg>
       Upload catalogue
-      <input type="file" id="catalogue-file" name="file" accept=".xlsx,.pdf" class="sr-only" tabindex="-1" onchange="this.form.submit()">
+      <input type="file" id="catalogue-file" name="file" accept=".xlsx,.pdf" class="sr-only" tabindex="-1"
+             onchange="if(confirmCatalogueOverwrite({{ 'true' if has_catalogue else 'false' }}, 'uploaded file')){this.form.submit()}else{this.value=''}">
     </label>
   </form>
 </div>
@@ -64,6 +82,12 @@
 {% if upload_error %}
 <div class="bg-red-50 border border-red-200 text-red-700 rounded-lg px-4 py-3 mb-4 text-sm">
   Could not parse the uploaded file — no entries found. Check the file is a valid TopDog catalogue (.xlsx or .pdf).
+</div>
+{% endif %}
+
+{% if overwrite_blocked %}
+<div class="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-4 py-3 mb-4 text-sm">
+  This trial already has catalogue data shared with everyone entered in it, so it was left untouched. Confirm the overwrite prompt to replace it.
 </div>
 {% endif %}
 
