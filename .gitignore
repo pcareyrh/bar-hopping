@@ -1,6 +1,7 @@
 .env
 data/
 *.xlsx
+*.pdf
 __pycache__/
 *.pyc
 *.pyo

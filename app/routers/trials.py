@@ -11,6 +11,7 @@ from app.models import Session, Trial, CatalogueEntry, ClassSchedule, SessionEnt
 log = logging.getLogger(__name__)
 router = APIRouter()
 templates = Jinja2Templates(directory="app/templates")
+CATALOGUE_JOB_TIMEOUT = 900
 
 
 @router.get("/s/{uuid}/trials", response_class=HTMLResponse)
@@ -77,7 +78,12 @@ def refresh_trial(uuid: str, trial_id: int, db: DBSession = Depends(get_db)):
 
     try:
         from app.queue import get_queue
-        job = get_queue().enqueue("app.worker.refresh_trial_docs_job", trial.id, uuid, job_timeout=300)
+        job = get_queue().enqueue(
+            "app.worker.refresh_trial_docs_job",
+            trial.id,
+            uuid,
+            job_timeout=CATALOGUE_JOB_TIMEOUT,
+        )
         log.info("Trial refresh enqueued: trial_id=%s session=%s job=%s", trial.id, uuid, job.id)
     except Exception:
         log.warning("Failed to enqueue trial refresh: trial_id=%s session=%s", trial.id, uuid, exc_info=True)
@@ -107,7 +113,7 @@ async def upload_catalogue(
             trial_id,
             data,
             file.content_type or "",
-            job_timeout=300,
+            job_timeout=CATALOGUE_JOB_TIMEOUT,
         )
         log.info("upload_catalogue enqueued: trial_id=%s job=%s", trial_id, job.id)
     except Exception:

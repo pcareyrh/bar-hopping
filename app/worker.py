@@ -12,6 +12,7 @@ from app.queue import set_sync_status, get_queue
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("worker")
+DOC_REFRESH_JOB_TIMEOUT = 900
 
 
 def sync_session_job(session_uuid: str) -> None:
@@ -146,7 +147,12 @@ def sync_session_job(session_uuid: str) -> None:
                 ).first()
                 if needs_cat or needs_sched:
                     log.info("sync_session_job: enqueuing doc refresh for trial %s", trial.external_id)
-                    queue.enqueue("app.worker.refresh_trial_docs_job", trial.id, session_uuid, job_timeout=300)
+                    queue.enqueue(
+                        "app.worker.refresh_trial_docs_job",
+                        trial.id,
+                        session_uuid,
+                        job_timeout=DOC_REFRESH_JOB_TIMEOUT,
+                    )
 
             log.info("sync_session_job: done for %s", session_uuid)
         finally:
@@ -251,7 +257,10 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                 if trial.catalogue_doc_url and not trial.catalogue_doc_url.rstrip("/").endswith("/entries"):
                     my_day_days = set(e["day"] for e in my_day_payload["catalogue_entries"])
                     try:
-                        cat_entries = await download_and_parse_catalogue(trial.catalogue_doc_url)
+                        cat_entries = await download_and_parse_catalogue(
+                            trial.catalogue_doc_url,
+                            trial_external_id=trial.external_id,
+                        )
                         cat_days = set(e["day"] for e in cat_entries)
                         missing_days = cat_days - my_day_days
                         if missing_days:
@@ -303,7 +312,10 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                         entries = await download_and_parse_catalogue_entries(trial.catalogue_doc_url)
                     else:
                         log.info("refresh_trial_docs_job: fetching catalogue from %s", trial.catalogue_doc_url)
-                        entries = await download_and_parse_catalogue(trial.catalogue_doc_url)
+                        entries = await download_and_parse_catalogue(
+                            trial.catalogue_doc_url,
+                            trial_external_id=trial.external_id,
+                        )
                     log.info("refresh_trial_docs_job: %d catalogue entries parsed", len(entries))
                 except Exception as e:
                     log.warning("refresh_trial_docs_job: catalogue download/parse failed: %s", e)
@@ -341,7 +353,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
 
 def upload_catalogue_job(trial_id: int, data: bytes, content_type: str) -> None:
     import io
-    from app.scraper.catalogue import parse_catalogue_pdf, parse_catalogue_xlsx
+    from app.scraper.catalogue import parse_catalogue_pdf_bytes_sync, parse_catalogue_xlsx
 
     db = SessionLocal()
     try:
@@ -352,7 +364,11 @@ def upload_catalogue_job(trial_id: int, data: bytes, content_type: str) -> None:
 
         try:
             if "pdf" in content_type or data[:5] == b"%PDF-":
-                entries = parse_catalogue_pdf(data)
+                entries = parse_catalogue_pdf_bytes_sync(
+                    data,
+                    filename=f"trial-{trial.external_id}.pdf",
+                    trial_external_id=trial.external_id,
+                )
             else:
                 entries = parse_catalogue_xlsx(io.BytesIO(data))
         except Exception:

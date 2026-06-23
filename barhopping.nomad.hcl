@@ -33,6 +33,47 @@ variable "topdog_pw" {
   default = ""
 }
 
+variable "openrouter_enabled" {
+  type    = string
+  default = "false"
+}
+
+variable "openrouter_api_key" {
+  type      = string
+  default   = ""
+  sensitive = true
+}
+
+variable "openrouter_model" {
+  type    = string
+  default = ""
+}
+
+variable "openrouter_pdf_engine" {
+  type    = string
+  default = "mistral-ocr"
+}
+
+variable "openrouter_pdf_pages_per_chunk" {
+  type    = string
+  default = "8"
+}
+
+variable "openrouter_pdf_chunk_overlap" {
+  type    = string
+  default = "0"
+}
+
+variable "openrouter_max_tokens" {
+  type    = string
+  default = "32768"
+}
+
+variable "openrouter_max_concurrency" {
+  type    = string
+  default = "3"
+}
+
 job "bar-hopping" {
   datacenters = ["dc1"]
   type        = "service"
@@ -231,10 +272,18 @@ EOH
       }
 
       env {
-        ENCRYPTION_KEY = var.encryption_key
-        DB_PASSWORD    = var.db_password
-        TOPDOG_USER    = var.topdog_user
-        TOPDOG_PW      = var.topdog_pw
+        ENCRYPTION_KEY       = var.encryption_key
+        DB_PASSWORD          = var.db_password
+        TOPDOG_USER          = var.topdog_user
+        TOPDOG_PW            = var.topdog_pw
+        OPENROUTER_ENABLED   = var.openrouter_enabled
+        OPENROUTER_API_KEY   = var.openrouter_api_key
+        OPENROUTER_MODEL     = var.openrouter_model
+        OPENROUTER_PDF_ENGINE = var.openrouter_pdf_engine
+        OPENROUTER_PDF_PAGES_PER_CHUNK = var.openrouter_pdf_pages_per_chunk
+        OPENROUTER_PDF_CHUNK_OVERLAP = var.openrouter_pdf_chunk_overlap
+        OPENROUTER_MAX_TOKENS = var.openrouter_max_tokens
+        OPENROUTER_MAX_CONCURRENCY = var.openrouter_max_concurrency
       }
 
       template {
