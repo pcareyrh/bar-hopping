@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 VALID_HEIGHTS = {200, 300, 400, 500, 600}
+DEFAULT_EXTRACTION_TIMEOUT_SECONDS = 600
 
 # Gemini strict JSON schema rejects integer minimum/enum constraints on nested items.
 CATALOGUE_JSON_SCHEMA: dict[str, Any] = {
@@ -128,7 +129,10 @@ def _max_concurrency() -> int:
 
 
 def extraction_timeout_seconds() -> int:
-    return max(1, _env_int("OPENROUTER_EXTRACTION_TIMEOUT", 900))
+    return max(
+        1,
+        _env_int("OPENROUTER_EXTRACTION_TIMEOUT", DEFAULT_EXTRACTION_TIMEOUT_SECONDS),
+    )
 
 
 def extraction_prompt(*, page_range: str | None = None, state_hint: str | None = None) -> str:
@@ -572,6 +576,11 @@ async def extract_catalogue_from_pdf(
             page_range,
             state_hint,
         )
+        if len(chunks) > 1 and not normalize_openrouter_entries(chunk_entries)[0]:
+            raise ValueError(
+                "OpenRouter extraction produced no valid entries "
+                f"for PDF pages {page_range}"
+            )
         raw_entries.extend(chunk_entries)
         state_hint = _state_hint_from_entries(chunk_entries) or state_hint
 

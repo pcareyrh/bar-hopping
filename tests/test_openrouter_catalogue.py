@@ -83,10 +83,10 @@ def test_build_request_payload_requires_model():
         build_request_payload(b"pdf", "cat.pdf")
 
 
-def test_extraction_timeout_defaults_to_catalogue_job_budget(monkeypatch):
+def test_extraction_timeout_defaults_below_catalogue_job_budget(monkeypatch):
     monkeypatch.delenv("OPENROUTER_EXTRACTION_TIMEOUT", raising=False)
 
-    assert extraction_timeout_seconds() == 900
+    assert extraction_timeout_seconds() == 600
 
 
 def test_normalize_valid_entries():
@@ -348,6 +348,30 @@ def test_extract_catalogue_rejects_more_invalid_than_valid(monkeypatch):
         return_value=raw_entries,
     ):
         with pytest.raises(ValueError, match="too many invalid entries"):
+            asyncio.run(extract_catalogue_from_pdf(b"%PDF-1.4 test"))
+
+
+def test_extract_catalogue_rejects_empty_chunk(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "google/gemini-2.5-flash")
+    chunks = [
+        ("catalogue-pages-1-1.pdf", b"one", "1-1"),
+        ("catalogue-pages-2-2.pdf", b"two", "2-2"),
+    ]
+
+    async def fake_extract(pdf_data, filename, *, api_key, page_range=None, state_hint=None):
+        if page_range == "2-2":
+            return []
+        return [_raw_entry(cat_number="201")]
+
+    with patch(
+        "app.scraper.openrouter_catalogue.split_pdf_into_chunks",
+        return_value=chunks,
+    ), patch(
+        "app.scraper.openrouter_catalogue._extract_chunk_resilient",
+        side_effect=fake_extract,
+    ):
+        with pytest.raises(ValueError, match="no valid entries.*2-2"):
             asyncio.run(extract_catalogue_from_pdf(b"%PDF-1.4 test"))
 
 
