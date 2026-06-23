@@ -8,14 +8,19 @@ event name — Nationals catalogues split one logical class into separately
 coded runs, e.g. "Masters Agility (ADM1/ADM2)" across days and
 "Open Agility (ADO1/2/3)" as three rounds on a single day.
 """
-from datetime import date
+from datetime import date, time
 
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.models import Base, Session, Trial, CatalogueEntry, SessionEntry
-from app.routers.schedule import _build_predictions, _strip_event_code
+from app.routers.schedule import (
+    _build_predictions,
+    _compute_catalogue_blocks,
+    _strip_event_code,
+    lunch_break_configs_for_trial,
+)
 
 
 @pytest.fixture()
@@ -84,3 +89,31 @@ def test_entry_fans_out_across_days_and_rounds(db):
     # cat 411 (other dog) never appears.
     assert all(p["cat_number"] == "410" for p in preds)
     assert len(preds) == 6
+
+
+def test_lunch_break_configs_use_catalogue_block_rings(db):
+    trial = Trial(external_id="1308", name="Ring Split", start_date=date(2026, 6, 23))
+    db.add(trial)
+    db.flush()
+
+    # Same event/height can carry inconsistent per-dog ring values. Schedule
+    # blocks use the first ring seen for that event/height, so settings must too.
+    db.add_all([
+        _cat(trial, day=1, event_name="Masters Agility", cat_number="410", run_position=1, ring_number="1"),
+        _cat(trial, day=1, event_name="Masters Agility", cat_number="411", run_position=2, ring_number="2"),
+    ])
+    db.flush()
+
+    blocks = _compute_catalogue_blocks(
+        trial,
+        db,
+        base_start=time(9, 0),
+        setup_mins=0,
+        walk_mins=0,
+        tpd_for_height=lambda _height, _event: 1,
+    )
+    configs = lunch_break_configs_for_trial(trial, db)
+
+    assert [(c["day"], c["ring"]) for c in configs] == sorted(
+        {(b["day"], b["ring"]) for b in blocks}
+    ) == [(1, "Ring 1")]

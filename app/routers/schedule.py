@@ -223,19 +223,40 @@ def lunch_break_configs_for_trial(trial: Trial, db: DBSession) -> list[dict]:
     lb_records = db.query(TrialLunchBreak).filter(TrialLunchBreak.trial_id == trial.id).all()
     lunch_breaks = {(r.day, r.ring): (r.lunch_break_at, r.lunch_break_mins) for r in lb_records}
 
-    seen: dict[tuple[int, str], dict] = {}
+    from collections import defaultdict
+    by_day: dict[int, list] = defaultdict(list)
     for ce in cat_entries:
-        day = getattr(ce, "day", 1) or 1
-        ring = _ring_of(ce.event_name, getattr(ce, "ring_number", None))
-        key = (day, ring)
-        if key not in seen:
-            lb = lunch_breaks.get(key)
-            seen[key] = {
-                "day": day,
-                "ring": ring,
-                "lunch_break_at": lb[0] if lb else None,
-                "lunch_break_mins": lb[1] if lb else 45,
-            }
+        by_day[getattr(ce, "day", 1) or 1].append(ce)
+
+    seen: dict[tuple[int, str], dict] = {}
+    for day_num in sorted(by_day.keys()):
+        day_entries = by_day[day_num]
+        event_order: dict[str, int] = {}
+        event_heights: dict[str, list[int]] = {}
+        event_rings: dict[str, str | None] = {}
+        height_rings: dict[tuple[str, int], str | None] = {}
+        for ce in day_entries:
+            key = (ce.event_name, ce.height_group)
+            if ce.event_name not in event_order:
+                event_order[ce.event_name] = len(event_order)
+                event_rings[ce.event_name] = getattr(ce, "ring_number", None)
+            heights = event_heights.setdefault(ce.event_name, [])
+            if ce.height_group not in heights:
+                heights.append(ce.height_group)
+                height_rings[key] = getattr(ce, "ring_number", None)
+
+        for event in sorted(event_heights, key=lambda e: event_order[e]):
+            for height in event_heights[event]:
+                ring = _ring_of(event, height_rings.get((event, height)) or event_rings.get(event))
+                key = (day_num, ring)
+                if key not in seen:
+                    lb = lunch_breaks.get(key)
+                    seen[key] = {
+                        "day": day_num,
+                        "ring": ring,
+                        "lunch_break_at": lb[0] if lb else None,
+                        "lunch_break_mins": lb[1] if lb else 45,
+                    }
     return [seen[k] for k in sorted(seen)]
 
 
