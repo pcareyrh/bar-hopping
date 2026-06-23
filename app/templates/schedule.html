@@ -61,7 +61,7 @@
         <div class="min-w-0">
           <p class="font-bold text-sm flex items-center gap-1.5 flex-wrap">
             Lunch Break
-            {% if b.duration_mins %}
+            {% if b.duration_mins is not none %}
             <span class="text-xs font-semibold bg-amber-200 text-amber-800 px-1.5 py-0.5 rounded">{{ b.duration_mins }} min</span>
             {% endif %}
           </p>
