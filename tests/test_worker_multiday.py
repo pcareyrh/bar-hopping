@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.worker as worker
-from app.models import Base, CatalogueEntry, Session as UserSession, SessionEntry, Trial
+from app.models import Base, CatalogueEntry, ClassSchedule, Session as UserSession, SessionEntry, Trial
 from app.routers.schedule import _build_predictions, _compute_catalogue_blocks
 
 
@@ -247,6 +247,61 @@ def test_refresh_legacy_partial_entries_preserves_other_days(monkeypatch):
         assert [row.day for row in rows] == [1, 2]
         assert rows[0].run_position == 2
         assert rows[1].run_position == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_day_agnostic_schedule_refresh_replaces_day_specific_rows():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    db = TestingSessionLocal()
+    try:
+        trial = Trial(
+            external_id="1310",
+            name="Legacy Schedule",
+            start_date=date(2026, 6, 23),
+        )
+        db.add(trial)
+        db.flush()
+        db.add_all([
+            ClassSchedule(
+                trial_id=trial.id,
+                day=1,
+                ring_number="1",
+                class_name="Masters Agility",
+                scheduled_start=time(8, 0),
+            ),
+            ClassSchedule(
+                trial_id=trial.id,
+                day=2,
+                ring_number="1",
+                class_name="Masters Agility",
+                scheduled_start=time(9, 0),
+            ),
+        ])
+        db.commit()
+
+        worker._merge_class_schedules(db, trial.id, [
+            {
+                "day": None,
+                "ring_number": "1",
+                "class_name": "Masters Agility",
+                "scheduled_start": time(10, 0),
+            },
+        ])
+        db.commit()
+
+        rows = db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial.id).all()
+        assert len(rows) == 1
+        assert rows[0].day is None
+        assert rows[0].scheduled_start == time(10, 0)
     finally:
         db.close()
         engine.dispose()

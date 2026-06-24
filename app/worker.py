@@ -232,7 +232,6 @@ def _merge_class_schedules(db, trial_id: int, schedules: list[dict]) -> None:
         return
     db.query(ClassSchedule).filter(
         ClassSchedule.trial_id == trial_id,
-        ClassSchedule.day.is_(None),
     ).delete(synchronize_session=False)
     for s in schedules:
         db.add(ClassSchedule(trial_id=trial_id, **s))
