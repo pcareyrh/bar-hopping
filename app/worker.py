@@ -386,6 +386,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                             )
                             _merge_catalogue_entries(db, trial_id, extra_entries)
                             db.commit()
+                            update_trial_end_date(trial, db)
                             _resolve_catalogue_links(trial, db)
                     except Exception as e:
                         log.warning("refresh_trial_docs_job: catalogue supplement failed: %s", e)

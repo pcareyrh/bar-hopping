@@ -45,13 +45,16 @@ def update_trial_end_date(trial: Trial, db: DBSession) -> None:
     if not trial.start_date:
         return
 
-    max_day = db.query(func.max(CatalogueEntry.day)).filter(
+    max_catalogue_day = db.query(func.max(CatalogueEntry.day)).filter(
         CatalogueEntry.trial_id == trial.id
     ).scalar()
-    if max_day is None:
-        max_day = db.query(func.max(ClassSchedule.day)).filter(
-            ClassSchedule.trial_id == trial.id
-        ).scalar()
+    max_schedule_day = db.query(func.max(ClassSchedule.day)).filter(
+        ClassSchedule.trial_id == trial.id
+    ).scalar()
+    max_day = max(
+        (day for day in (max_catalogue_day, max_schedule_day) if day is not None),
+        default=None,
+    )
 
     if max_day and max_day > 1:
         trial.end_date = trial.start_date + timedelta(days=max_day - 1)
