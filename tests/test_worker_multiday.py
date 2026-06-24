@@ -5,7 +5,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.worker as worker
-from app.models import Base, CatalogueEntry, Session as UserSession, SessionEntry, Trial
+from app.models import Base, CatalogueEntry, ClassSchedule, Session as UserSession, SessionEntry, Trial
 from app.routers.schedule import _build_predictions, _compute_catalogue_blocks
 
 
@@ -136,6 +136,228 @@ def test_refresh_supplements_partial_my_day_with_late_catalogue(monkeypatch):
         )
         predictions = _build_predictions(refreshed_session, refreshed_trial, db, day_blocks=blocks)
         assert [prediction["day"] for prediction in predictions] == [1, 2]
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_refresh_legacy_partial_entries_preserves_other_days(monkeypatch):
+    """Legacy /entries refresh should update covered days without wiping others."""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(worker, "SessionLocal", TestingSessionLocal)
+
+    db = TestingSessionLocal()
+    try:
+        session = UserSession(uuid="u1")
+        trial = Trial(
+            external_id="1309",
+            name="Legacy Partial",
+            start_date=date(2026, 6, 23),
+            catalogue_doc_url="https://www.topdogevents.com.au/trials/1309/entries",
+        )
+        db.add_all([session, trial])
+        db.flush()
+        db.add_all([
+            SessionEntry(
+                session_uuid=session.uuid,
+                trial_id=trial.id,
+                dog_name="Fika",
+                event_name="Masters Agility",
+                cat_number="410",
+                height_group=400,
+            ),
+            CatalogueEntry(
+                trial_id=trial.id,
+                day=1,
+                event_name="Masters Agility",
+                cat_number="410",
+                height_group=400,
+                run_position=1,
+                height_group_total=1,
+                nfc=False,
+                dog_name="Fika",
+                handler_name="Handler",
+                ring_number="1",
+            ),
+            CatalogueEntry(
+                trial_id=trial.id,
+                day=2,
+                event_name="Masters Agility",
+                cat_number="410",
+                height_group=400,
+                run_position=1,
+                height_group_total=1,
+                nfc=False,
+                dog_name="Fika",
+                handler_name="Handler",
+                ring_number="1",
+            ),
+        ])
+        db.commit()
+        trial_id = trial.id
+    finally:
+        db.close()
+
+    async def fake_resolve_auth_cookies(_db, _session_uuid):
+        return None
+
+    async def fake_fetch_trial_detail(external_id):
+        return {"external_id": external_id}
+
+    async def fake_download_and_parse_catalogue_entries(url):
+        assert url.endswith("/entries")
+        return [
+            {
+                "day": 1,
+                "event_name": "Masters Agility",
+                "cat_number": "410",
+                "height_group": 400,
+                "run_position": 2,
+                "height_group_total": 1,
+                "nfc": False,
+                "dog_name": "Fika",
+                "handler_name": "Handler",
+                "ring_number": "1",
+            },
+        ]
+
+    monkeypatch.setattr(worker, "_resolve_auth_cookies", fake_resolve_auth_cookies)
+    monkeypatch.setattr("app.scraper.trials.fetch_trial_detail", fake_fetch_trial_detail)
+    monkeypatch.setattr(
+        "app.scraper.catalogue.download_and_parse_catalogue_entries",
+        fake_download_and_parse_catalogue_entries,
+    )
+
+    worker.refresh_trial_docs_job(trial_id, session_uuid="u1")
+
+    db = TestingSessionLocal()
+    try:
+        rows = (
+            db.query(CatalogueEntry)
+            .filter(CatalogueEntry.trial_id == trial_id)
+            .order_by(CatalogueEntry.day, CatalogueEntry.run_position)
+            .all()
+        )
+        assert [row.day for row in rows] == [1, 2]
+        assert rows[0].run_position == 2
+        assert rows[1].run_position == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_day_agnostic_schedule_refresh_replaces_day_specific_rows():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    db = TestingSessionLocal()
+    try:
+        trial = Trial(
+            external_id="1310",
+            name="Legacy Schedule",
+            start_date=date(2026, 6, 23),
+        )
+        db.add(trial)
+        db.flush()
+        db.add_all([
+            ClassSchedule(
+                trial_id=trial.id,
+                day=1,
+                ring_number="1",
+                class_name="Masters Agility",
+                scheduled_start=time(8, 0),
+            ),
+            ClassSchedule(
+                trial_id=trial.id,
+                day=2,
+                ring_number="1",
+                class_name="Masters Agility",
+                scheduled_start=time(9, 0),
+            ),
+        ])
+        db.commit()
+
+        worker._merge_class_schedules(db, trial.id, [
+            {
+                "day": None,
+                "ring_number": "1",
+                "class_name": "Masters Agility",
+                "scheduled_start": time(10, 0),
+            },
+        ])
+        db.commit()
+
+        rows = db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial.id).all()
+        assert len(rows) == 1
+        assert rows[0].day is None
+        assert rows[0].scheduled_start == time(10, 0)
+    finally:
+        db.close()
+        engine.dispose()
+
+
+def test_mixed_day_schedule_refresh_inserts_day_agnostic_rows():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    db = TestingSessionLocal()
+    try:
+        trial = Trial(
+            external_id="1311",
+            name="Mixed Schedule",
+            start_date=date(2026, 6, 23),
+        )
+        db.add(trial)
+        db.flush()
+        db.add(
+            ClassSchedule(
+                trial_id=trial.id,
+                day=2,
+                ring_number="1",
+                class_name="Excellent Jumping",
+                scheduled_start=time(9, 0),
+            )
+        )
+        db.commit()
+
+        worker._merge_class_schedules(db, trial.id, [
+            {
+                "day": None,
+                "ring_number": "1",
+                "class_name": "Briefing",
+                "scheduled_start": time(7, 30),
+            },
+            {
+                "day": 1,
+                "ring_number": "1",
+                "class_name": "Masters Agility",
+                "scheduled_start": time(8, 0),
+            },
+        ])
+        db.commit()
+
+        rows = db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial.id).all()
+        rows_by_name = {row.class_name: row for row in rows}
+        assert set(rows_by_name) == {"Briefing", "Masters Agility", "Excellent Jumping"}
+        assert rows_by_name["Briefing"].day is None
+        assert rows_by_name["Briefing"].scheduled_start == time(7, 30)
+        assert rows_by_name["Excellent Jumping"].day == 2
     finally:
         db.close()
         engine.dispose()
