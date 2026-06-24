@@ -57,6 +57,8 @@ def update_trial_end_date(trial: Trial, db: DBSession) -> None:
     )
 
     if max_day and max_day > 1:
-        trial.end_date = trial.start_date + timedelta(days=max_day - 1)
+        inferred_end_date = trial.start_date + timedelta(days=max_day - 1)
+        if trial.end_date is None or inferred_end_date > trial.end_date:
+            trial.end_date = inferred_end_date
     elif trial.end_date is None:
         trial.end_date = trial.start_date

@@ -307,6 +307,73 @@ def test_day_agnostic_schedule_refresh_replaces_day_specific_rows():
         engine.dispose()
 
 
+def test_refresh_legacy_schedule_updates_end_date(monkeypatch):
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(worker, "SessionLocal", TestingSessionLocal)
+
+    db = TestingSessionLocal()
+    try:
+        session = UserSession(uuid="u1")
+        trial = Trial(
+            external_id="1312",
+            name="Legacy Schedule",
+            start_date=date(2026, 6, 23),
+            schedule_doc_url="https://example.test/schedule.pdf",
+        )
+        db.add_all([session, trial])
+        db.commit()
+        trial_id = trial.id
+    finally:
+        db.close()
+
+    async def fake_resolve_auth_cookies(_db, _session_uuid):
+        return {"session": "cookie"}
+
+    async def fake_fetch_trial_detail(external_id):
+        return {"external_id": external_id}
+
+    async def fake_fetch_my_day(_external_id, _cookies):
+        from app.scraper.my_day import MyDayUnavailable
+
+        raise MyDayUnavailable("not available")
+
+    async def fake_download_and_parse_schedule(url, cookies=None):
+        assert url == "https://example.test/schedule.pdf"
+        assert cookies == {"session": "cookie"}
+        return [
+            {
+                "day": 3,
+                "ring_number": "1",
+                "class_name": "Novice Agility",
+                "scheduled_start": time(9, 0),
+            },
+        ]
+
+    monkeypatch.setattr(worker, "_resolve_auth_cookies", fake_resolve_auth_cookies)
+    monkeypatch.setattr("app.scraper.trials.fetch_trial_detail", fake_fetch_trial_detail)
+    monkeypatch.setattr("app.scraper.my_day.fetch_my_day", fake_fetch_my_day)
+    monkeypatch.setattr(
+        "app.scraper.schedule.download_and_parse_schedule",
+        fake_download_and_parse_schedule,
+    )
+
+    worker.refresh_trial_docs_job(trial_id, session_uuid="u1")
+
+    db = TestingSessionLocal()
+    try:
+        refreshed_trial = db.get(Trial, trial_id)
+        assert refreshed_trial.end_date == date(2026, 6, 25)
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_mixed_day_schedule_refresh_inserts_day_agnostic_rows():
     engine = create_engine(
         "sqlite://",

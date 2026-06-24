@@ -147,3 +147,39 @@ def test_update_trial_end_date_from_schedule_days():
 
     db.close()
     engine.dispose()
+
+
+def test_update_trial_end_date_keeps_existing_later_end_date():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    db = sessionmaker(bind=engine)()
+
+    trial = Trial(
+        external_id="1309",
+        name="Partial Days",
+        start_date=date(2026, 6, 23),
+        end_date=date(2026, 6, 25),
+    )
+    db.add(trial)
+    db.flush()
+    db.add(CatalogueEntry(
+        trial_id=trial.id,
+        day=2,
+        event_name="Masters Agility",
+        cat_number="410",
+        height_group=400,
+        run_position=1,
+        height_group_total=1,
+        nfc=False,
+    ))
+    db.commit()
+
+    update_trial_end_date(trial, db)
+    assert trial.end_date == date(2026, 6, 25)
+
+    db.close()
+    engine.dispose()

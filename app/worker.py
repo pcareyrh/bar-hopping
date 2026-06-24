@@ -423,6 +423,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                         classes = await download_and_parse_schedule(trial.schedule_doc_url, cookies=cookies)
                         _merge_class_schedules(db, trial_id, classes)
                         db.commit()
+                        update_trial_end_date(trial, db)
                     except Exception as e:
                         log.warning("refresh_trial_docs_job: schedule download/parse failed: %s", e)
 
