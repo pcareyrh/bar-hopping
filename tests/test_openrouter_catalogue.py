@@ -78,7 +78,9 @@ def test_build_request_payload_file_parser_plugin(monkeypatch):
     assert payload["max_tokens"] == 32768
 
 
-def test_build_request_payload_requires_model():
+def test_build_request_payload_requires_model(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+
     with pytest.raises(ValueError, match="OPENROUTER_MODEL"):
         build_request_payload(b"pdf", "cat.pdf")
 

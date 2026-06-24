@@ -11,16 +11,18 @@ This test only covers the local, deterministic legacy parser; the OpenRouter
 path requires a live API key and is covered separately by mocked unit tests in
 `tests/test_openrouter_catalogue.py`.
 """
+import asyncio
 import pathlib
 from collections import Counter
 
 import pytest
 
-from app.scraper.catalogue import parse_catalogue_pdf
+from app.scraper.catalogue import parse_catalogue_pdf, parse_catalogue_pdf_bytes
 
 # The PDF lives at the repo root (committed as test data). Skip cleanly if a
 # checkout doesn't have it, so the suite never hard-fails on its absence.
 _FIXTURE = pathlib.Path(__file__).resolve().parents[1] / "Final_Catalogue_upload_v2_ANONYMISED.pdf"
+_PLAN = pathlib.Path(__file__).resolve().parents[1] / "docs" / "remove-local-pdf-processing-plan.md"
 
 pytestmark = pytest.mark.skipif(
     not _FIXTURE.exists(),
@@ -33,6 +35,29 @@ VALID_HEIGHTS = {200, 300, 400, 500, 600}
 @pytest.fixture(scope="module")
 def entries() -> list[dict]:
     return parse_catalogue_pdf(_FIXTURE.read_bytes())
+
+
+def test_removal_plan_matches_anonymized_pdf_fallback_path(monkeypatch):
+    """The removal plan must account for the real fixture-backed local fallback."""
+    monkeypatch.delenv("OPENROUTER_ENABLED", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    fallback_entries = asyncio.run(
+        parse_catalogue_pdf_bytes(
+            _FIXTURE.read_bytes(),
+            filename=_FIXTURE.name,
+            trial_external_id="anonymous-fixture",
+        )
+    )
+
+    assert len(fallback_entries) == 900
+
+    plan = _PLAN.read_text()
+    assert "Remove the legacy `pdfplumber` catalogue parser" in plan
+    assert "`tests/test_catalogue_pdf_real_fixture.py`" in plan
+    assert "`pdfplumber==0.11.4`" in plan
+    assert "`pypdf==6.14.0`" in plan
+    assert "Safe to remove with only catalogue fallback removal? | Required action before removal" in plan
 
 
 def test_parses_expected_entry_count(entries):
