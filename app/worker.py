@@ -9,6 +9,7 @@ from app.database import SessionLocal
 from app.models import Session, Trial, SessionEntry, CatalogueEntry, ClassSchedule
 from app import crypto
 from app.queue import set_sync_status, get_queue
+from app.trial_dates import trial_model_active_on, update_trial_end_date
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("worker")
@@ -38,8 +39,29 @@ def sync_session_job(session_uuid: str) -> None:
             set_sync_status(session_uuid, "Fetching your upcoming trials…")
             user_trials = await sync_user_entries(email, password)
             log.info("sync_session_job: /entries returned %d trials", len(user_trials))
+            synced_ext_ids = {ut["external_id"] for ut in user_trials}
 
-            if not user_trials:
+            # TopDog drops in-progress trials from /entries once they start.
+            # Keep session entries for active trials the user is already linked to.
+            preserved_entries: list[dict] = []
+            for se in db.query(SessionEntry).filter(SessionEntry.session_uuid == session_uuid).all():
+                trial = db.query(Trial).filter(Trial.id == se.trial_id).first()
+                if not trial or trial.external_id in synced_ext_ids:
+                    continue
+                update_trial_end_date(trial, db)
+                if not trial_model_active_on(trial):
+                    continue
+                preserved_entries.append({
+                    "trial_id": se.trial_id,
+                    "dog_name": se.dog_name,
+                    "height_group": se.height_group,
+                    "event_name": se.event_name,
+                    "cat_number": se.cat_number,
+                    "position_override": se.position_override,
+                    "time_per_dog_override": se.time_per_dog_override,
+                })
+
+            if not user_trials and not preserved_entries:
                 set_sync_status(session_uuid, "No upcoming trials found.")
                 session.topdog_synced_at = datetime.utcnow()
                 db.commit()
@@ -72,6 +94,7 @@ def sync_session_job(session_uuid: str) -> None:
                         external_id=ext_id,
                         name=detail.get("name") or ut["name"],
                         start_date=detail.get("start_date") or ut.get("start_date"),
+                        end_date=detail.get("end_date") or ut.get("end_date"),
                         venue=detail.get("venue"),
                         schedule_doc_url=detail.get("schedule_doc_url"),
                         catalogue_doc_url=detail.get("catalogue_doc_url"),
@@ -84,7 +107,12 @@ def sync_session_job(session_uuid: str) -> None:
                     trial.name = ut["name"] or trial.name
                     if ut.get("start_date"):
                         trial.start_date = ut["start_date"]
+                    if ut.get("end_date"):
+                        trial.end_date = ut["end_date"]
+                    if detail.get("end_date"):
+                        trial.end_date = detail["end_date"]
                     trial.scraped_at = now
+                update_trial_end_date(trial, db)
             db.commit()
 
             set_sync_status(session_uuid, "Saving entries…")
@@ -116,6 +144,17 @@ def sync_session_job(session_uuid: str) -> None:
                         position_override=None,
                         time_per_dog_override=None,
                     ))
+            for pe in preserved_entries:
+                db.add(SessionEntry(
+                    session_uuid=session_uuid,
+                    trial_id=pe["trial_id"],
+                    dog_name=pe["dog_name"],
+                    height_group=pe["height_group"],
+                    event_name=pe["event_name"],
+                    cat_number=pe["cat_number"],
+                    position_override=pe["position_override"],
+                    time_per_dog_override=pe["time_per_dog_override"],
+                ))
             session.topdog_synced_at = datetime.utcnow()
             db.commit()
 
@@ -128,7 +167,9 @@ def sync_session_job(session_uuid: str) -> None:
             )
             for i, trial in enumerate(user_trial_rows, start=1):
                 set_sync_status(session_uuid, "Linking catalogue entries…", i, len(user_trial_rows))
+                update_trial_end_date(trial, db)
                 _resolve_catalogue_links(trial, db)
+            db.commit()
 
             queue = get_queue()
             for trial in user_trial_rows:
@@ -322,6 +363,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                     trial.start_time = my_day_payload["start_time"]
                 trial.scraped_at = datetime.utcnow()
                 db.commit()
+                update_trial_end_date(trial, db)
                 _resolve_catalogue_links(trial, db)
 
                 # my_day may only cover the current/next day (e.g. Saturday
@@ -369,6 +411,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                 if entries:
                     _merge_catalogue_entries(db, trial_id, entries)
                     db.commit()
+                    update_trial_end_date(trial, db)
                     _resolve_catalogue_links(trial, db)
 
             if trial.schedule_doc_url:
@@ -442,6 +485,7 @@ def upload_catalogue_job(trial_id: int, data: bytes, content_type: str) -> None:
             db.add(CatalogueEntry(trial_id=trial_id, **e))
         db.flush()
         _resolve_catalogue_links(trial, db)
+        update_trial_end_date(trial, db)
         db.commit()
         log.info("upload_catalogue_job: %d entries stored for trial %s", len(entries), trial.external_id)
     except Exception:

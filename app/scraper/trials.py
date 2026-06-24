@@ -6,7 +6,7 @@ site. This module just fetches metadata (venue, date, doc links) for a known
 trial id.
 """
 import re
-from datetime import datetime
+from datetime import date, datetime
 import httpx
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
@@ -83,14 +83,11 @@ def _parse_trial_detail(external_id: str, html: str) -> dict:
 
     date_el = soup.select_one(".page-header h4")
     if date_el:
-        m = DATE_RE.search(date_el.get_text())
-        if m:
-            d, mon, y = m.groups()
-            mon_full = MONTH_MAP.get(mon, mon)
-            try:
-                result["start_date"] = datetime.strptime(f"{d} {mon_full} {y}", "%d %B %Y").date()
-            except ValueError:
-                pass
+        start_date, end_date = _parse_dates(date_el.get_text())
+        if start_date:
+            result["start_date"] = start_date
+        if end_date:
+            result["end_date"] = end_date
 
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -127,3 +124,17 @@ def _parse_trial_detail(external_id: str, html: str) -> dict:
                 pass
 
     return result
+
+
+def _parse_dates(text: str) -> tuple[date | None, date | None]:
+    dates: list[date] = []
+    for m in DATE_RE.finditer(text or ""):
+        d, mon, y = m.groups()
+        mon_full = MONTH_MAP.get(mon, mon)
+        try:
+            dates.append(datetime.strptime(f"{d} {mon_full} {y}", "%d %B %Y").date())
+        except ValueError:
+            continue
+    if not dates:
+        return None, None
+    return min(dates), max(dates)
