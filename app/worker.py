@@ -139,9 +139,9 @@ def sync_session_job(session_uuid: str) -> None:
                     trial.catalogue_doc_url
                     and trial.catalogue_doc_url.rstrip("/").endswith("/entries")
                 )
-                # Re-scrape if we have no URL/no rows yet, or if the stored URL is
-                # the /entries HTML fallback (an xlsx may have been published since).
-                needs_cat = (trial.catalogue_doc_url and not has_cat_rows) or cat_url_is_entries
+                # Re-scrape if we have no rows yet, or if the stored URL is the
+                # /entries HTML fallback (an xlsx may have been published since).
+                needs_cat = (not has_cat_rows) or cat_url_is_entries
                 needs_sched = trial.schedule_doc_url and not db.query(ClassSchedule.id).filter(
                     ClassSchedule.trial_id == trial.id
                 ).first()
@@ -215,6 +215,36 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
             log.info("refresh_trial_docs_job: trial %s (id=%d) catalogue_doc_url=%s",
                      trial.external_id, trial_id, trial.catalogue_doc_url)
 
+            async def refresh_trial_detail_metadata() -> None:
+                # Pick up catalogue/schedule URLs that may have appeared since
+                # the trial was first added. Multi-day trials often expose a
+                # full catalogue after /my_day starts showing only the first day.
+                try:
+                    log.info("refresh_trial_docs_job: fetching trial detail for %s", trial.external_id)
+                    detail = await fetch_trial_detail(trial.external_id)
+                    log.info("refresh_trial_docs_job: detail catalogue_doc_url=%s schedule_doc_url=%s",
+                             detail.get("catalogue_doc_url"), detail.get("schedule_doc_url"))
+                    new_cat = detail.get("catalogue_doc_url")
+                    if new_cat and new_cat != trial.catalogue_doc_url:
+                        current_is_entries = bool(
+                            trial.catalogue_doc_url
+                            and trial.catalogue_doc_url.rstrip("/").endswith("/entries")
+                        )
+                        new_is_entries = new_cat.rstrip("/").endswith("/entries")
+                        if not trial.catalogue_doc_url or (current_is_entries and not new_is_entries):
+                            trial.catalogue_doc_url = new_cat
+                            log.info("refresh_trial_docs_job: updated catalogue_doc_url to %s", trial.catalogue_doc_url)
+                    if detail.get("schedule_doc_url") and not trial.schedule_doc_url:
+                        trial.schedule_doc_url = detail["schedule_doc_url"]
+                    if detail.get("start_time"):
+                        trial.start_time = detail["start_time"]
+                        log.info("refresh_trial_docs_job: updated start_time to %s", trial.start_time)
+                    db.commit()
+                except Exception as e:
+                    log.warning("refresh_trial_docs_job: trial detail re-scrape failed: %s", e)
+
+            await refresh_trial_detail_metadata()
+
             cookies = await _resolve_auth_cookies(db, session_uuid)
 
             my_day_payload = None
@@ -234,6 +264,22 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                     log.warning("refresh_trial_docs_job: my_day fetch failed for %s: %s", trial.external_id, e)
 
             if my_day_payload and my_day_payload["catalogue_entries"]:
+                existing_catalogue_entries = [
+                    {
+                        "day": e.day,
+                        "event_name": e.event_name,
+                        "cat_number": e.cat_number,
+                        "height_group": e.height_group,
+                        "run_position": e.run_position,
+                        "height_group_total": e.height_group_total,
+                        "nfc": e.nfc,
+                        "dog_name": e.dog_name,
+                        "handler_name": e.handler_name,
+                        "ring_number": e.ring_number,
+                    }
+                    for e in db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).all()
+                ]
+
                 # Replace catalogue + schedule in one shot from my_day.
                 db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
                     {"catalogue_entry_id": None}, synchronize_session=False
@@ -251,11 +297,12 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                 _resolve_catalogue_links(trial, db)
 
                 # my_day may only cover the current/next day (e.g. Saturday
-                # before the trial starts). If the catalogue PDF has additional
-                # days, supplement with those entries so multi-day trials show
-                # the full schedule.
+                # before the trial starts). If another catalogue source has
+                # additional days, supplement with those entries so multi-day
+                # trials show the full schedule.
+                my_day_days = set(e["day"] for e in my_day_payload["catalogue_entries"])
+                supplemented_days: set[int] = set()
                 if trial.catalogue_doc_url and not trial.catalogue_doc_url.rstrip("/").endswith("/entries"):
-                    my_day_days = set(e["day"] for e in my_day_payload["catalogue_entries"])
                     try:
                         cat_entries = await download_and_parse_catalogue(
                             trial.catalogue_doc_url,
@@ -270,41 +317,29 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                             for e in cat_entries:
                                 if e["day"] in missing_days:
                                     db.add(CatalogueEntry(trial_id=trial_id, **e))
+                                    supplemented_days.add(e["day"])
                             db.commit()
                             _resolve_catalogue_links(trial, db)
                     except Exception as e:
                         log.warning("refresh_trial_docs_job: catalogue supplement failed: %s", e)
 
+                existing_missing_days = {
+                    e["day"] for e in existing_catalogue_entries
+                    if e["day"] not in my_day_days and e["day"] not in supplemented_days
+                }
+                if existing_missing_days:
+                    log.info("refresh_trial_docs_job: my_day covered days %s; "
+                             "stored catalogue has extra days %s — supplementing",
+                             sorted(my_day_days), sorted(existing_missing_days))
+                    for e in existing_catalogue_entries:
+                        if e["day"] in existing_missing_days:
+                            db.add(CatalogueEntry(trial_id=trial_id, **e))
+                    db.commit()
+                    _resolve_catalogue_links(trial, db)
+
                 return
 
             # ----- Legacy fallback path -----
-            # Re-scrape the trial detail page to pick up catalogue/schedule URLs
-            # that may have appeared since the trial was first added (e.g. entries
-            # closed after initial sync, or format changed to HTML entries page).
-            try:
-                log.info("refresh_trial_docs_job: fetching trial detail for %s", trial.external_id)
-                detail = await fetch_trial_detail(trial.external_id)
-                log.info("refresh_trial_docs_job: detail catalogue_doc_url=%s schedule_doc_url=%s",
-                         detail.get("catalogue_doc_url"), detail.get("schedule_doc_url"))
-                new_cat = detail.get("catalogue_doc_url")
-                if new_cat and new_cat != trial.catalogue_doc_url:
-                    current_is_entries = bool(
-                        trial.catalogue_doc_url
-                        and trial.catalogue_doc_url.rstrip("/").endswith("/entries")
-                    )
-                    new_is_entries = new_cat.rstrip("/").endswith("/entries")
-                    if not trial.catalogue_doc_url or (current_is_entries and not new_is_entries):
-                        trial.catalogue_doc_url = new_cat
-                        log.info("refresh_trial_docs_job: updated catalogue_doc_url to %s", trial.catalogue_doc_url)
-                if detail.get("schedule_doc_url") and not trial.schedule_doc_url:
-                    trial.schedule_doc_url = detail["schedule_doc_url"]
-                if detail.get("start_time"):
-                    trial.start_time = detail["start_time"]
-                    log.info("refresh_trial_docs_job: updated start_time to %s", trial.start_time)
-                db.commit()
-            except Exception as e:
-                log.warning("refresh_trial_docs_job: trial detail re-scrape failed: %s", e)
-
             if trial.catalogue_doc_url:
                 try:
                     if trial.catalogue_doc_url.rstrip("/").endswith("/entries"):
