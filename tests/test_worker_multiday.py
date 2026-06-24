@@ -141,6 +141,117 @@ def test_refresh_supplements_partial_my_day_with_late_catalogue(monkeypatch):
         engine.dispose()
 
 
+def test_refresh_legacy_partial_entries_preserves_other_days(monkeypatch):
+    """Legacy /entries refresh should update covered days without wiping others."""
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    monkeypatch.setattr(worker, "SessionLocal", TestingSessionLocal)
+
+    db = TestingSessionLocal()
+    try:
+        session = UserSession(uuid="u1")
+        trial = Trial(
+            external_id="1309",
+            name="Legacy Partial",
+            start_date=date(2026, 6, 23),
+            catalogue_doc_url="https://www.topdogevents.com.au/trials/1309/entries",
+        )
+        db.add_all([session, trial])
+        db.flush()
+        db.add_all([
+            SessionEntry(
+                session_uuid=session.uuid,
+                trial_id=trial.id,
+                dog_name="Fika",
+                event_name="Masters Agility",
+                cat_number="410",
+                height_group=400,
+            ),
+            CatalogueEntry(
+                trial_id=trial.id,
+                day=1,
+                event_name="Masters Agility",
+                cat_number="410",
+                height_group=400,
+                run_position=1,
+                height_group_total=1,
+                nfc=False,
+                dog_name="Fika",
+                handler_name="Handler",
+                ring_number="1",
+            ),
+            CatalogueEntry(
+                trial_id=trial.id,
+                day=2,
+                event_name="Masters Agility",
+                cat_number="410",
+                height_group=400,
+                run_position=1,
+                height_group_total=1,
+                nfc=False,
+                dog_name="Fika",
+                handler_name="Handler",
+                ring_number="1",
+            ),
+        ])
+        db.commit()
+        trial_id = trial.id
+    finally:
+        db.close()
+
+    async def fake_resolve_auth_cookies(_db, _session_uuid):
+        return None
+
+    async def fake_fetch_trial_detail(external_id):
+        return {"external_id": external_id}
+
+    async def fake_download_and_parse_catalogue_entries(url):
+        assert url.endswith("/entries")
+        return [
+            {
+                "day": 1,
+                "event_name": "Masters Agility",
+                "cat_number": "410",
+                "height_group": 400,
+                "run_position": 2,
+                "height_group_total": 1,
+                "nfc": False,
+                "dog_name": "Fika",
+                "handler_name": "Handler",
+                "ring_number": "1",
+            },
+        ]
+
+    monkeypatch.setattr(worker, "_resolve_auth_cookies", fake_resolve_auth_cookies)
+    monkeypatch.setattr("app.scraper.trials.fetch_trial_detail", fake_fetch_trial_detail)
+    monkeypatch.setattr(
+        "app.scraper.catalogue.download_and_parse_catalogue_entries",
+        fake_download_and_parse_catalogue_entries,
+    )
+
+    worker.refresh_trial_docs_job(trial_id, session_uuid="u1")
+
+    db = TestingSessionLocal()
+    try:
+        rows = (
+            db.query(CatalogueEntry)
+            .filter(CatalogueEntry.trial_id == trial_id)
+            .order_by(CatalogueEntry.day, CatalogueEntry.run_position)
+            .all()
+        )
+        assert [row.day for row in rows] == [1, 2]
+        assert rows[0].run_position == 2
+        assert rows[1].run_position == 1
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_refresh_supplements_partial_my_day_with_stored_catalogue(monkeypatch):
     engine = create_engine(
         "sqlite://",

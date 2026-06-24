@@ -191,6 +191,53 @@ async def _resolve_auth_cookies(db, session_uuid: str | None) -> dict[str, str] 
     return None
 
 
+def _merge_catalogue_entries(db, trial_id: int, entries: list[dict]) -> None:
+    """Replace catalogue rows for the days present in *entries*; leave other days untouched."""
+    if not entries:
+        return
+    days = {e.get("day", 1) for e in entries}
+    ce_ids = [
+        row[0]
+        for row in db.query(CatalogueEntry.id).filter(
+            CatalogueEntry.trial_id == trial_id,
+            CatalogueEntry.day.in_(days),
+        ).all()
+    ]
+    if ce_ids:
+        db.query(SessionEntry).filter(
+            SessionEntry.trial_id == trial_id,
+            SessionEntry.catalogue_entry_id.in_(ce_ids),
+        ).update({"catalogue_entry_id": None}, synchronize_session=False)
+    db.query(CatalogueEntry).filter(
+        CatalogueEntry.trial_id == trial_id,
+        CatalogueEntry.day.in_(days),
+    ).delete(synchronize_session=False)
+    for e in entries:
+        db.add(CatalogueEntry(trial_id=trial_id, **e))
+
+
+def _merge_class_schedules(db, trial_id: int, schedules: list[dict]) -> None:
+    """Replace class-schedule rows for the days present in *schedules*; leave other days untouched."""
+    if not schedules:
+        return
+    explicit_days = {s["day"] for s in schedules if s.get("day") is not None}
+    if explicit_days:
+        db.query(ClassSchedule).filter(
+            ClassSchedule.trial_id == trial_id,
+            ClassSchedule.day.in_(explicit_days),
+        ).delete(synchronize_session=False)
+        for s in schedules:
+            if s.get("day") is not None:
+                db.add(ClassSchedule(trial_id=trial_id, **s))
+        return
+    db.query(ClassSchedule).filter(
+        ClassSchedule.trial_id == trial_id,
+        ClassSchedule.day.is_(None),
+    ).delete(synchronize_session=False)
+    for s in schedules:
+        db.add(ClassSchedule(trial_id=trial_id, **s))
+
+
 def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> None:
     """Download and parse catalogue and schedule data for a trial.
 
@@ -264,32 +311,9 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                     log.warning("refresh_trial_docs_job: my_day fetch failed for %s: %s", trial.external_id, e)
 
             if my_day_payload and my_day_payload["catalogue_entries"]:
-                existing_catalogue_entries = [
-                    {
-                        "day": e.day,
-                        "event_name": e.event_name,
-                        "cat_number": e.cat_number,
-                        "height_group": e.height_group,
-                        "run_position": e.run_position,
-                        "height_group_total": e.height_group_total,
-                        "nfc": e.nfc,
-                        "dog_name": e.dog_name,
-                        "handler_name": e.handler_name,
-                        "ring_number": e.ring_number,
-                    }
-                    for e in db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).all()
-                ]
-
-                # Replace catalogue + schedule in one shot from my_day.
-                db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
-                    {"catalogue_entry_id": None}, synchronize_session=False
-                )
-                db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
-                for e in my_day_payload["catalogue_entries"]:
-                    db.add(CatalogueEntry(trial_id=trial_id, **e))
-                db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial_id).delete()
-                for c in my_day_payload["class_schedules"]:
-                    db.add(ClassSchedule(trial_id=trial_id, **c))
+                my_day_days = {e["day"] for e in my_day_payload["catalogue_entries"]}
+                _merge_catalogue_entries(db, trial_id, my_day_payload["catalogue_entries"])
+                _merge_class_schedules(db, trial_id, my_day_payload.get("class_schedules") or [])
                 if my_day_payload.get("start_time"):
                     trial.start_time = my_day_payload["start_time"]
                 trial.scraped_at = datetime.utcnow()
@@ -297,45 +321,28 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                 _resolve_catalogue_links(trial, db)
 
                 # my_day may only cover the current/next day (e.g. Saturday
-                # before the trial starts). If another catalogue source has
-                # additional days, supplement with those entries so multi-day
-                # trials show the full schedule.
-                my_day_days = set(e["day"] for e in my_day_payload["catalogue_entries"])
-                supplemented_days: set[int] = set()
+                # before the trial starts). Merge any additional days from the
+                # full catalogue PDF without touching days my_day already updated.
                 if trial.catalogue_doc_url and not trial.catalogue_doc_url.rstrip("/").endswith("/entries"):
                     try:
                         cat_entries = await download_and_parse_catalogue(
                             trial.catalogue_doc_url,
                             trial_external_id=trial.external_id,
                         )
-                        cat_days = set(e["day"] for e in cat_entries)
-                        missing_days = cat_days - my_day_days
-                        if missing_days:
-                            log.info("refresh_trial_docs_job: my_day covered days %s; "
-                                     "catalogue PDF has extra days %s — supplementing",
-                                     sorted(my_day_days), sorted(missing_days))
-                            for e in cat_entries:
-                                if e["day"] in missing_days:
-                                    db.add(CatalogueEntry(trial_id=trial_id, **e))
-                                    supplemented_days.add(e["day"])
+                        extra_entries = [e for e in cat_entries if e["day"] not in my_day_days]
+                        if extra_entries:
+                            extra_days = sorted({e["day"] for e in extra_entries})
+                            log.info(
+                                "refresh_trial_docs_job: my_day covered days %s; "
+                                "merging catalogue PDF days %s",
+                                sorted(my_day_days),
+                                extra_days,
+                            )
+                            _merge_catalogue_entries(db, trial_id, extra_entries)
                             db.commit()
                             _resolve_catalogue_links(trial, db)
                     except Exception as e:
                         log.warning("refresh_trial_docs_job: catalogue supplement failed: %s", e)
-
-                existing_missing_days = {
-                    e["day"] for e in existing_catalogue_entries
-                    if e["day"] not in my_day_days and e["day"] not in supplemented_days
-                }
-                if existing_missing_days:
-                    log.info("refresh_trial_docs_job: my_day covered days %s; "
-                             "stored catalogue has extra days %s — supplementing",
-                             sorted(my_day_days), sorted(existing_missing_days))
-                    for e in existing_catalogue_entries:
-                        if e["day"] in existing_missing_days:
-                            db.add(CatalogueEntry(trial_id=trial_id, **e))
-                    db.commit()
-                    _resolve_catalogue_links(trial, db)
 
                 return
 
@@ -356,12 +363,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                     log.warning("refresh_trial_docs_job: catalogue download/parse failed: %s", e)
                     entries = []
                 if entries:
-                    db.query(SessionEntry).filter(SessionEntry.trial_id == trial_id).update(
-                        {"catalogue_entry_id": None}, synchronize_session=False
-                    )
-                    db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).delete()
-                    for e in entries:
-                        db.add(CatalogueEntry(trial_id=trial_id, **e))
+                    _merge_catalogue_entries(db, trial_id, entries)
                     db.commit()
                     _resolve_catalogue_links(trial, db)
 
@@ -371,9 +373,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
                 else:
                     try:
                         classes = await download_and_parse_schedule(trial.schedule_doc_url, cookies=cookies)
-                        db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial_id).delete()
-                        for c in classes:
-                            db.add(ClassSchedule(trial_id=trial_id, **c))
+                        _merge_class_schedules(db, trial_id, classes)
                         db.commit()
                     except Exception as e:
                         log.warning("refresh_trial_docs_job: schedule download/parse failed: %s", e)
