@@ -307,6 +307,62 @@ def test_day_agnostic_schedule_refresh_replaces_day_specific_rows():
         engine.dispose()
 
 
+def test_mixed_day_schedule_refresh_inserts_day_agnostic_rows():
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    db = TestingSessionLocal()
+    try:
+        trial = Trial(
+            external_id="1311",
+            name="Mixed Schedule",
+            start_date=date(2026, 6, 23),
+        )
+        db.add(trial)
+        db.flush()
+        db.add(
+            ClassSchedule(
+                trial_id=trial.id,
+                day=2,
+                ring_number="1",
+                class_name="Excellent Jumping",
+                scheduled_start=time(9, 0),
+            )
+        )
+        db.commit()
+
+        worker._merge_class_schedules(db, trial.id, [
+            {
+                "day": None,
+                "ring_number": "1",
+                "class_name": "Briefing",
+                "scheduled_start": time(7, 30),
+            },
+            {
+                "day": 1,
+                "ring_number": "1",
+                "class_name": "Masters Agility",
+                "scheduled_start": time(8, 0),
+            },
+        ])
+        db.commit()
+
+        rows = db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial.id).all()
+        rows_by_name = {row.class_name: row for row in rows}
+        assert set(rows_by_name) == {"Briefing", "Masters Agility", "Excellent Jumping"}
+        assert rows_by_name["Briefing"].day is None
+        assert rows_by_name["Briefing"].scheduled_start == time(7, 30)
+        assert rows_by_name["Excellent Jumping"].day == 2
+    finally:
+        db.close()
+        engine.dispose()
+
+
 def test_refresh_supplements_partial_my_day_with_stored_catalogue(monkeypatch):
     engine = create_engine(
         "sqlite://",

@@ -222,13 +222,18 @@ def _merge_class_schedules(db, trial_id: int, schedules: list[dict]) -> None:
         return
     explicit_days = {s["day"] for s in schedules if s.get("day") is not None}
     if explicit_days:
+        has_day_agnostic_rows = any(s.get("day") is None for s in schedules)
         db.query(ClassSchedule).filter(
             ClassSchedule.trial_id == trial_id,
             ClassSchedule.day.in_(explicit_days),
         ).delete(synchronize_session=False)
+        if has_day_agnostic_rows:
+            db.query(ClassSchedule).filter(
+                ClassSchedule.trial_id == trial_id,
+                ClassSchedule.day.is_(None),
+            ).delete(synchronize_session=False)
         for s in schedules:
-            if s.get("day") is not None:
-                db.add(ClassSchedule(trial_id=trial_id, **s))
+            db.add(ClassSchedule(trial_id=trial_id, **s))
         return
     db.query(ClassSchedule).filter(
         ClassSchedule.trial_id == trial_id,
