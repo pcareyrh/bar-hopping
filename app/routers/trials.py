@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session as DBSession
 
 from app.database import get_db
 from app.models import Session, Trial, CatalogueEntry, ClassSchedule, SessionEntry
+from app.trial_dates import trial_model_active_on, update_trial_end_date
 
 log = logging.getLogger(__name__)
 router = APIRouter()
@@ -26,13 +27,20 @@ def trials_list(uuid: str, request: Request, db: DBSession = Depends(get_db)):
         .all()
         if user_trial_ids else []
     )
+    active_trials = []
+    for trial in user_trials:
+        update_trial_end_date(trial, db)
+        if trial_model_active_on(trial):
+            active_trials.append(trial)
+    if active_trials:
+        db.commit()
 
     return templates.TemplateResponse(
         request, "trials.html",
         {
             "session": session,
             "uuid": uuid,
-            "trials": user_trials,
+            "trials": active_trials,
             "user_trial_ids": user_trial_ids,
         },
     )

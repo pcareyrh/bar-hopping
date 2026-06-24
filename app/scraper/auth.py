@@ -4,11 +4,13 @@ from datetime import datetime, date
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from bs4 import BeautifulSoup
 
+from app.trial_dates import trial_dict_active_on
+
 BASE_URL = "https://www.topdogevents.com.au"
 
 HEIGHT_RE = re.compile(r"^\s*(200|300|400|500|600)\s*(mm)?\s*$", re.I)
 CAT_RE = re.compile(r"^\s*(\d{2,4})(NFC)?\s*$", re.I)
-DATE_RE = re.compile(r"(\w+day),\s*(\d{1,2})\s+(\w+)\s+(\d{4})")
+DATE_RE = re.compile(r"(?:\w+day,\s*)?(\d{1,2})\s+(\w+)\s+(\d{4})")
 
 
 async def _login(page, email: str, password: str) -> None:
@@ -53,8 +55,8 @@ async def sync_user_entries(
             {trial_external_id, dog_name, event_name, height_group, cat_number}
         ]}
 
-    Only trials with upcoming dates are returned (the page itself shows
-    upcoming only, but we also filter by date as a safeguard).
+    Trials that have not yet completed by the current day are returned (the
+    page itself shows upcoming only, but we also filter by date as a safeguard).
     """
     async with async_playwright() as p:
         browser = await p.chromium.launch(args=["--no-sandbox"])
@@ -76,7 +78,7 @@ async def sync_user_entries(
 
     trials = _parse_entries_page(html)
     today = date.today()
-    return [t for t in trials if not t["start_date"] or t["start_date"] >= today]
+    return [t for t in trials if trial_dict_active_on(t, today=today)]
 
 
 def _parse_entries_page(html: str) -> list[dict]:
@@ -95,7 +97,7 @@ def _parse_entries_page(html: str) -> list[dict]:
         name = _clean(strong.get_text())
 
         small = pane.find("small", class_="text-muted")
-        start_date = _parse_date(small.get_text(" ", strip=True)) if small else None
+        start_date, end_date = _parse_dates(small.get_text(" ", strip=True)) if small else (None, None)
 
         entries: list[dict] = []
         for row in pane.select("table tbody tr"):
@@ -107,6 +109,7 @@ def _parse_entries_page(html: str) -> list[dict]:
             "external_id": external_id,
             "name": name,
             "start_date": start_date,
+            "end_date": end_date,
             "entries": entries,
         })
 
@@ -143,15 +146,16 @@ def _parse_entry_row(row, external_id: str) -> dict | None:
     }
 
 
-def _parse_date(text: str):
-    m = DATE_RE.search(text or "")
-    if not m:
-        return None
-    _, d, mon, y = m.groups()
-    try:
-        return datetime.strptime(f"{d} {mon} {y}", "%d %B %Y").date()
-    except ValueError:
-        return None
+def _parse_dates(text: str) -> tuple[date | None, date | None]:
+    dates: list[date] = []
+    for d, mon, y in DATE_RE.findall(text or ""):
+        try:
+            dates.append(datetime.strptime(f"{d} {mon} {y}", "%d %B %Y").date())
+        except ValueError:
+            continue
+    if not dates:
+        return None, None
+    return min(dates), max(dates)
 
 
 def _clean(s: str) -> str:
