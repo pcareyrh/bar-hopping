@@ -31,7 +31,7 @@ def schedule_view(
     request: Request,
     db: DBSession = Depends(get_db),
     day: int | None = Query(default=None),
-    tab: str = Query(default="mine"),
+    tab: str = Query(default="yours"),
 ):
     session = _get_session(uuid, db)
     trial = _get_trial(trial_id, db)
@@ -68,7 +68,7 @@ def schedule_view(
     combined = list(predictions) + [p for g in friend_groups for p in g["predictions"]]
     flag_conflicts(combined)
 
-    active_tab = tab if tab in ("mine", "friends", "fullday") else "mine"
+    selected_tab = tab if tab in ("yours", "friends", "full") else "yours"
 
     user_block_keys = {(p["day"], p["event_name"], p["height_group"]) for p in predictions if not p["pending"]}
     for b in day_blocks:
@@ -94,12 +94,12 @@ def schedule_view(
             "available_days": available_days,
             "selected_day": selected_day,
             "day_dates": day_dates,
+            "selected_tab": selected_tab,
             "multi_day": len(available_days) > 1,
             "trial_start_str": format_predicted_time(
                 datetime.combine(trial.start_date or date.today(), trial_start)
             ) if not has_class_schedules else None,
             "has_class_schedules": has_class_schedules,
-            "active_tab": active_tab,
             "friend_groups": friend_groups,
             "friend_data": data_state,
             "friend_data_str": format_scraped_at(data_state.get("scraped_at")),
@@ -689,7 +689,7 @@ def add_friend_route(
                 "multi_day": False,
                 "trial_start_str": None,
                 "has_class_schedules": False,
-                "active_tab": "friends",
+                "selected_tab": "friends",
                 "friend_groups": [],
                 "friend_data": data_state,
                 "friend_data_str": format_scraped_at(data_state.get("scraped_at")),
