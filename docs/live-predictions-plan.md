@@ -1,16 +1,13 @@
 # Live Predictions — Updating Run Times Throughout the Day
 
 How to make Bar Hopping's predicted run times **self-correcting on the day** by
-ingesting TopDog's live ring-status feed and re-anchoring each prediction to the
-actual progress of the trial.
+tracking **when each (ring, class, height) event starts and finishes**, then
+re-anchoring the schedule from those measured event boundaries.
 
 > Investigated against the live page for trial 1307 (2026 Agility Nationals
 > Queensland) at `https://www.topdogevents.com.au/trials/1307/live`. All live
-> surfaces documented below were reachable **anonymously** (the page renders a
-> "Log In / Sign Up" sidebar); no TopDog credentials were required to read the
-> ring-status board, the live-results menu, or a per-class live view. The only
-> things still behind Devise auth are the JSON/admin variants
-> (`/trials/{id}/rings.json` → `401`).
+> surfaces documented below were reachable **anonymously**; no TopDog
+> credentials were required for the ring-status board or the live-results menu.
 
 ---
 
@@ -38,481 +35,458 @@ None of these track reality. On the day the schedule routinely drifts because:
 
 - rings run **ahead or behind** the paper start (judging starts late, briefings
   run long, a ring waits for a shared judge),
-- **scratches / absentees / NFC** change the real dog count per height,
 - **height-change and course-build gaps** vary a lot between clubs,
-- a fast height (lots of DQs/short courses) burns the queue faster than 90 s/dog;
-  a Masters Gamblers height with 60 s courses + walk-throughs runs much slower,
+- some classes burn through faster or slower than the default `tpd` implies,
 - lunch actually starts when a ring *reaches* a break, not at a fixed clock time.
 
-The data to correct all of this is published live by TopDog and is free to read.
+The data to correct this is published live by TopDog and is free to read.
 
 ---
 
-## 2. The live data source (verified)
+## 2. Design principle — event boundaries, not individual runs
 
-### 2.1 `GET /trials/{trial_id}/live` — "Ring Status" board (public, primary source)
+**Do not** anchor predictions on individual dog completions from the live board.
+The board's `#last_run` / `last_runs[]` feed is useful for spectators but
+**unreliable for timing**:
+
+- runs can be entered **out of order** (WD/DQ/backfill lag),
+- the "most recent" cat# may not reflect true queue position,
+- `runs left` counts can jump when scratches are applied,
+- per-run wall-clock timestamps are **not published** anyway.
+
+Instead, track **event-level boundaries**: when a (ring, class, height) segment
+**starts** and **finishes**. Within a started event, keep using the catalogue
+`run_position` and user-configured `tpd` — that is pre-known running order, not
+live per-dog tracking.
+
+```
+Measured:  event_started_at, event_finished_at, event_duration
+Predict:   event_started_at + (run_position - 1) × tpd     # event already running
+           chain prior measured durations + changeover      # event not yet started
+```
+
+This matches how handlers actually think about the day ("Novice Agility 400 is
+running now, Masters is probably 45 min away") rather than "dog 465 just ran".
+
+---
+
+## 3. The live data source (verified)
+
+### 3.1 `GET /trials/{trial_id}/live` — "Ring Status" board (public, primary source)
 
 Server-renders the **current state of every ring**, then keeps it live over a
-WebSocket. The initial HTML alone already contains everything we need for a
-poll-based implementation. Per ring:
+WebSocket. Per ring:
 
 ```html
 <div class="card mb-3 ring-card" id="ring_351" data-status="Running">
-  ...
   Ring 1
   <span id="class_name">Excellent Gamblers (400)</span>
   <span id="status">Running</span>
-  <div id="last_run">
-    <span class="live-run-cat">4031</span> - Morehill Scarlett In Red: 65.04sec: 31.0pts
-    <span class="live-run-cat">4002</span> - Phoenix - WD
-    <span class="live-run-cat">496</span>  - Flatout Sweet As (AI) - WD
-  </div>
-  <span id="class_runs_left"> 2 runs left, 2 in class</span>
   <span id="updated" data-timestamp="2026-06-25T04:04:26Z"></span>
 </div>
 ```
 
-Extractable fields **per ring**:
+**Fields we use** (event-level only):
 
 | Field | Source | Example | Use |
 |---|---|---|---|
-| `ring_id` | `id="ring_351"` | `351` | join key to `/view` URLs + WS deltas |
-| ring label | `.live-item-name` text | `Ring 1` | map to `CatalogueEntry.ring_number` (`"1"`) |
-| current class+height | `#class_name` | `Excellent Gamblers (400)` | which (event, height) block is live |
-| status | `data-status` / `#status` | `Running` / `Complete` / `Height Change` / `Not Running` | gate the maths per state |
-| last run cat# | `.live-run-cat` (first) | `4031` | anchor actual position via catalogue order |
-| last run result | `#last_run` text | `65.04sec: 31.0pts`, `DQ`, `WD`, `CLEAR!!`, `F: 4` | pace timing + show real result |
-| runs left / in class | `#class_runs_left` | ` 2 runs left, 2 in class` | dogs remaining in the live height segment |
-| updated | `#updated@data-timestamp` | `2026-06-25T04:04:26Z` (UTC) | staleness / pace sampling clock |
+| `ring_id` | `id="ring_351"` | `351` | stable ring key |
+| ring label | `.live-item-name` | `Ring 1` | → `CatalogueEntry.ring_number` (`"1"`) |
+| current class+height | `#class_name` | `Excellent Gamblers (400)` | which event segment is live |
+| status | `data-status` / `#status` | `Running` / `Complete` / `Height Change` / `Not Running` | boundary detection |
+| updated | `#updated@data-timestamp` | `2026-06-25T04:04:26Z` (UTC) | timestamp for transitions |
 
-Trial-wide (top of page):
+**Fields we ignore for prediction** (display / debugging only):
 
-| Field | Source | Example |
+| Field | Why ignored |
+|---|---|
+| `#last_run` / `last_runs[]` | out-of-order, no wall-clock time |
+| `#class_runs_left` | scratch-sensitive, not needed when we have event duration |
+| trial `#live_run_count` / `#live_runs_left` | trial-wide progress UI only |
+
+Status vocabulary: **Running, Complete, Height Change, Not Running**.
+
+**Event boundary signals** (detected by comparing consecutive polls or WS
+messages for the same `ring_id`):
+
+| Transition | Meaning | Record |
 |---|---|---|
-| total runs | `#live_run_count` | `4166` |
-| runs left | `#live_runs_left` | `2196` |
-| progress | `#progress-bar` width | `47.3%` |
+| `class_name` changes (any status) | previous segment ended, new one began | `finished_at` on old key; `started_at` on new key |
+| `status` → `Complete` (same `class_name`) | segment finished | `finished_at` |
+| `status` → `Running` (new `class_name` vs prior poll) | segment started | `started_at` |
+| `status` → `Height Change` (same `class_name`) | mid-segment pause (judge change, walk) | pause interval — do **not** count toward event duration |
+| `status` → `Not Running` | ring idle (lunch, waiting for judge) | gap between events |
 
-Status vocabulary observed: **Running, Complete, Height Change, Not Running**
-(the JS lowercases+hyphenates these into `status-running` etc.).
+Use the ring card's `updated` timestamp as the boundary clock when a transition
+is observed; on the first poll of a new day, if a ring is already `Running`,
+set `started_at = updated` (best available; flag `start_confidence=low`).
 
-### 2.2 WebSocket: `wss://www.topdogevents.com.au/cable` (Rails ActionCable)
-
-The page opts in via `<meta name="action-cable-url">` and a hidden
-`<input id="trial_id" value="1307">`, then subscribes with the bundled
-`results_feed_channel` JS:
+### 3.2 WebSocket: `wss://www.topdogevents.com.au/cable` (Rails ActionCable)
 
 ```js
 App.cable.subscriptions.create(
   { channel: "ResultsFeedChannel", trial_id: trialId },
-  { received(data) { /* patches the DOM */ } }
+  { received(data) { /* patches ring cards */ } }
 )
 ```
 
-Each broadcast `data` object (verified from the channel handler) may carry:
+Relevant `data` fields for **event tracking only**:
 
 ```
-ring_id | class_id      // which card to update (ring_id is what /live uses)
+ring_id
 class_name             // "Novice Jumping (600)"
 status                 // "Running" | "Complete" | "Height Change" | "Not Running"
-last_run | last_runs[] // recent run strings ("cat - name: 32.89sec - CLEAR!!")
-class_runs_left        // " 4 runs left, 6 in class"
-updated                // ISO-8601 UTC
-note                   // free-text ring note
-run_count | runs_left  // trial-wide counters
-feed | feed_timestamp  // live feed line
-chat_message           // eScribe / handler chat
+updated                // ISO-8601 UTC — use as transition timestamp
+note                   // optional ring note (lunch, walk open, etc.)
 ```
 
-This is a push version of exactly the fields in §2.1. Connecting needs the
-standard ActionCable handshake (`{"command":"subscribe","identifier":"{\"channel\":\"ResultsFeedChannel\",\"trial_id\":\"1307\"}"}`)
-over the `wss` URL — no cookie required for this public channel.
+Ignore `last_run`, `last_runs`, `class_runs_left` for prediction. WS gives
+lower latency on boundary detection; polling alone is sufficient for v1.
 
-### 2.3 `GET /trials/{trial_id}/results/live` and `.../view` (public, secondary source)
+### 3.3 `GET /trials/{trial_id}/results/live` → `.../view` (optional, display only)
 
-The live-results menu lists per-class links:
+Per-class live view shows completed runs with times/Q/DQ. Use **only** to show
+"your dog has run" and the actual result on the schedule card after the event
+finishes — **not** to anchor or pace future predictions.
 
-```
-/trials/{trial_id}/results/live/trial/{sub_trial_id}/ring/{ring_id}/class/{class_id}/view
-```
+### 3.4 What is NOT available publicly
 
-Each `/view` page is **the same `my-day-entry-row` HTML the app already parses**
-(`app/scraper/my_day.py::parse_my_day_detail`) plus a progress header:
-
-```html
-<div id="live-results-list" data-trial-id="1307" data-discipline-class-id="1">
-  <strong>93</strong> of <strong>95</strong> runs complete · <strong>2</strong> runs remaining
-  <div class="my-day-entry-row">
-    <span class="badge badge-dark">401</span> <strong>Perrioak Litl Boy Gray</strong> · Claire Bird
-    <span>36.15s</span> <span>5 faults</span>
-  </div>
-  <div class="my-day-entry-row">
-    <span class="badge badge-dark">437</span> <strong>...</strong> <span class="badge badge-danger">DQ</span>
-  </div>
-  ...
-</div>
-```
-
-This gives, for a specific class: exact **runs-complete / total**, plus each
-completed run's cat#, time, and Q/DQ/faults. It is the authoritative source for
-"has *my* dog run yet, and what did it get", and a precise per-class pace sample.
-`ring_id` here matches the `ring_NNN` DOM id on the board; `sub_trial_id`
-(e.g. `3063`) identifies the day/session.
-
-### 2.4 What is NOT available publicly
-
-- `/trials/{id}/live.json` → `404`; `/trials/{id}/rings.json` → `401`. There is
-  **no public JSON**; ingest must parse the HTML board and/or consume the WS.
-- No per-run wall-clock timestamps in the markup — only a per-ring `updated`
-  time. **Pace must be measured by sampling** counts over time (see §4.2), not
-  read directly.
+- `/trials/{id}/live.json` → `404`; `/trials/{id}/rings.json` → `401`. Ingest
+  parses HTML and/or consumes the WebSocket.
+- No explicit `started_at` / `finished_at` fields in the markup — **we derive
+  them from status/class transitions** and the ring `updated` timestamp.
 
 ---
 
-## 3. Architecture fit & constraints
+## 4. Architecture fit & constraints
 
-These mirror the constraints already documented in `PLAN.md` §0:
+These mirror the constraints in `PLAN.md` §0:
 
-- **Web image can't scrape.** `requirements.web.txt` has no `httpx`/`bs4`. All
-  live fetching/parsing lives in the **worker image**, lazy-imported inside RQ
-  job functions (the existing `app/worker.py` pattern). The web tier only reads
-  the new DB tables.
-- **No scheduler exists.** The live poller needs a recurring trigger. Reuse the
-  pattern added for results in `barhopping-results-cron.nomad.hcl` (a periodic
-  Nomad batch task that just `enqueue`s), but at a **short cadence while a trial
-  is live** (see §5.3). For native/dev there's `docker-compose`; a tiny
-  rq-driven self-reschedule loop is the simplest portable option (§5.2).
-- **Worker is single-process.** One poll job per active trial, serialised. With a
-  handful of live trials and a ~30–60 s cadence this is trivial load.
-- **SQLite (dev) + Postgres (prod) parity.** New tables via
-  `Base.metadata.create_all`; new columns via the existing
-  `_migrate()`/`_add_column_if_missing` helper in `app/main.py`.
-- **Timezone.** Live timestamps are UTC (`...Z`); the predictor already works in
-  naive local time with `AEST_OFFSET`. Convert `updated` → AEST on ingest and
-  keep all prediction maths in trial-local time as today.
+- **Web image can't scrape.** Live fetching lives in the **worker image**,
+  lazy-imported inside RQ jobs (`app/worker.py` pattern). Web tier reads DB only.
+- **No scheduler exists.** Use a periodic Nomad batch (like
+  `barhopping-results-cron.nomad.hcl`) plus a self-rescheduling poll loop while
+  a trial is live.
+- **Worker is single-process.** One poll per active trial at ~45–60 s is enough;
+  boundary detection is not latency-sensitive.
+- **SQLite (dev) + Postgres (prod).** New tables via `create_all`; columns via
+  `_migrate()` in `app/main.py`.
+- **Timezone.** `updated` is UTC; convert to trial-local time on ingest.
 
 ---
 
-## 4. The core idea — re-anchor each ring's clock to reality
+## 5. The core idea — measured event timeline per ring
 
-Replace the "paper" assumptions per ring/height with **measured** ones, computed
-from the live board, and recompute downstream predictions from the live "now"
-line instead of from `trial.start_time`.
+Build a **timeline of (ring, class, height) segments** with measured start and
+finish times, then project the rest of the day by chaining durations.
 
-For each ring we continuously learn three things:
+### 5.1 Event segment identity
 
-1. **Where the ring actually is** — the current (event, height) segment, and the
-   actual position reached within it.
-2. **How fast it's actually going** — measured seconds-per-dog (rolling), per
-   (class, height), replacing the static `tpd`.
-3. **How far ahead/behind paper it is** — a single signed offset for display
-   ("Ring 1 running 18 min behind").
-
-### 4.1 Anchoring position (who is on the line *now*)
-
-Two independent signals, used with a preference order:
-
-**(a) cat#-anchored (preferred).** The board's first `.live-run-cat` is the most
-recently completed dog. Map it to a `CatalogueEntry` (`trial_id`, `cat_number`)
-→ that dog's `run_position` within its (event, height). Then for a user run in
-the same segment:
+A segment key is:
 
 ```
-dogs_ahead   = user.run_position - last_completed.run_position
-eta          = now + dogs_ahead × measured_pace
+(ring_number, event_name, height_group, day)
 ```
 
-**(b) count-anchored (fallback / cross-check).** Parse `#class_runs_left`
-(` N runs left, M in class`) or the `/view` "X of Y complete":
+`event_name` and `height_group` come from parsing `#class_name`
+(`"Excellent Gamblers (400)"` → `("Excellent Gamblers", 400)`), joined to
+`CatalogueEntry` / `ClassSchedule` via the same normalisation as
+`_match_class_schedule()`.
+
+### 5.2 Recording start and finish
+
+On each poll (or WS message), for each ring compare against the previous
+snapshot:
+
+```python
+def apply_ring_transition(prev, curr, observed_at):
+    key = (curr.ring_number, curr.event_name, curr.height_group)
+
+    if prev is None or prev.class_name != curr.class_name:
+        # class changed → close previous segment, open new one
+        if prev:
+            close_segment(prev_key, at=curr.updated or observed_at)
+        open_segment(key, at=curr.updated or observed_at, status=curr.status)
+
+    elif prev.status != "Complete" and curr.status == "Complete":
+        close_segment(key, at=curr.updated or observed_at)
+
+    elif prev.status in ("Not Running", "Height Change") and curr.status == "Running":
+        # resumed after pause — extend segment, don't open a new one
+        resume_segment(key, at=curr.updated or observed_at)
+
+    update_segment_status(key, curr.status)
+```
+
+`close_segment` sets `finished_at` and `duration_s = finished_at - started_at`,
+subtracting any accumulated **pause** intervals (`Height Change`, `Not Running`
+while same `class_name`).
+
+Store one row per segment in `EventLiveTiming` (see §6.2). Segments with
+`finished_at IS NULL` are **in progress**.
+
+### 5.3 Measured event duration
+
+For completed segments:
 
 ```
-position_reached = M - N            # dogs already run in this segment
-dogs_ahead       = user.position_in_segment - position_reached
+duration_s = finished_at - started_at - pause_s
 ```
 
-Use (a) when the cat# resolves to a catalogue row; fall back to (b) when it
-doesn't (sentinel/`~` catalogues, or board lag). Both rely on data already in
-`CatalogueEntry` (`run_position`, `height_group`, `ring_number`, `cat_number`).
-
-### 4.2 Measuring pace (seconds per dog) without per-run timestamps
-
-Sample `(ring_id, class_name, runs_left, observed_at)` on every poll/WS update
-and store it. Pace over a window = work done ÷ wall-clock elapsed:
+Maintain a rolling statistic per `(event_name, height_group)` across all rings
+that have finished that segment today (and optionally prior trials for the same
+club):
 
 ```
-Δdogs = runs_left(t0) - runs_left(t1)           # dogs completed between samples
-Δt    = observed_at(t1) - observed_at(t0)
-pace  = Δt / Δdogs                              # sec/dog, when Δdogs > 0
+typical_duration_s = median(recent duration_s)   # prefer same-ring, else global
 ```
 
-- Maintain an **EWMA** per (class, height) so a couple of slow/fast dogs don't
-  whipsaw the estimate; seed it with `session.tpd_for(...)` until ≥ ~3 dogs of
-  evidence exist (confidence ramp).
-- Ignore samples spanning a **status ≠ Running** interval (Height Change / paused
-  / lunch) so changeover gaps don't pollute the per-dog rate — capture those as a
-  separate **changeover overhead** estimate instead.
-- Clamp to a sane band (e.g. 20–240 s/dog) to reject parsing glitches.
+Fallback when no measurement yet: catalogue estimate
 
-### 4.3 Re-anchored prediction
+```
+estimated_duration_s = height_group_total × session.tpd_for(height, event)
+```
 
-For a user's run, choose the formula by the live state of its ring+segment:
+This replaces per-dog pace sampling. A whole Novice Agility 400 block that took
+52 min teaches us that block takes ~52 min, regardless of which individual dogs
+were WD or DQ.
 
-| Live state of the run's (ring, class, height) | Prediction |
+### 5.4 Re-anchored prediction
+
+Walk the per-ring ordered block list from `_compute_catalogue_blocks()` (unchanged
+catalogue order), but seed each ring's cursor from the **measured timeline**:
+
+| Segment state | Prediction for a dog in this segment |
 |---|---|
-| **Complete** and dog matched in `/view` | Show **actual** time/result; mark done. |
-| **Running** this exact segment | `now + dogs_ahead × pace` (§4.1, §4.2). |
-| **Running** an earlier segment in the same ring | Sum remaining dogs in intervening segments × their pace + changeover overheads, anchored at `now`. |
-| Ring **behind** but segment not started | Shift the paper `block_first_run` by the ring's current **offset** (measured ring lateness), then apply `(position-1) × pace`. |
-| Ring **Not Running** / no live data yet | Fall back to today's static `predict_run` / `predict_run_from_block` (current behaviour). |
+| **Finished** (`finished_at` set) | Dog has run — optional `/view` lookup for actual result; no future time. |
+| **Running** (`started_at` set, no `finished_at`) | `started_at + (run_position - 1) × tpd` |
+| **Not started** (no row yet) | `cursor`, where `cursor` chains from the previous segment's measured or estimated `finished_at` + `changeover_s` |
+| No live data for ring | Fall back to paper `predict_run` / `predict_run_from_block` |
 
-The "remaining dogs in intervening segments" walk reuses the per-ring ordered
-block list already produced by `_compute_catalogue_blocks()` — we only swap the
-**start anchor** (now-line) and the **per-dog/changeover costs** (measured) into
-the same structure, so the existing schedule layout, lunch handling, and
-conflict detection (`flag_conflicts`) keep working unchanged.
+**Changeover** between events on the same ring: measured gap between consecutive
+finished→started pairs on that ring today; default to `session.default_setup_mins
++ session.default_walk_mins` until we have ≥1 sample.
 
-**Ring offset for display:** `offset = predicted_block_first_run(paper) −
-projected_block_first_run(live)` for the currently-running segment, surfaced as
-"running N min ahead/behind".
+**Ring offset (display):** for the currently-running segment,
+`offset = paper_block_first_run − measured_started_at` → "Ring 1 · 18 min behind".
 
-### 4.4 Confidence & staleness
+Within a running event, `run_position` still comes from the **catalogue** (or
+user `position_override`). We are **not** trying to infer position from live
+results — only the event's wall-clock start is live.
 
-- Each live ring carries `updated`; if `now − updated` exceeds a threshold
-  (e.g. 10–15 min) mark the ring **stale** and fall back toward the paper
-  estimate, flagged in the UI ("live data paused").
-- Tag each prediction with a `source ∈ {actual, live, scheduled}` and a coarse
-  confidence so the UI can style it (solid vs. dimmed/"~").
+### 5.5 Confidence & staleness
+
+- `start_confidence`: `high` (saw Running transition) / `low` (inferred mid-event
+  on first poll).
+- If a ring's `updated` is older than ~15 min while status is Running, mark
+  **stale** and widen the prediction band / fall back toward paper.
+- Tag predictions `source ∈ {event_live, scheduled}`; finished runs optionally
+  `source=actual` when `/view` confirms a result.
 
 ---
 
-## 5. Implementation
+## 6. Implementation
 
-### 5.1 Scraper — `app/scraper/live.py` (worker image only)
+### 6.1 Scraper — `app/scraper/live.py` (worker image only)
 
-Plain `httpx.AsyncClient` + `BeautifulSoup`, no auth, mirroring
-`app/scraper/my_day.py`. Lazy-imported inside worker jobs only.
+Plain `httpx` + `BeautifulSoup`. Lazy-imported in worker jobs only.
 
 ```python
 BASE = "https://www.topdogevents.com.au"
 
 async def fetch_ring_status(trial_external_id: str) -> dict:
-    """GET /trials/{id}/live → parse the board. Returns:
+    """GET /trials/{id}/live → event-level ring snapshot:
        {
          "trial_external_id": "1307",
-         "observed_at": datetime,            # parse-time (UTC→AEST)
-         "run_count": 4166, "runs_left": 2196,
+         "observed_at": datetime,
          "rings": [
-            {ring_id:"351", ring_number:"1", class_name:"Excellent Gamblers",
-             height_group:400, status:"Running",
-             runs_left:2, runs_in_class:2,
-             last_run_cat:"4031", last_run_raw:"...: 65.04sec: 31.0pts",
-             updated: datetime},
+            {ring_id:"351", ring_number:"1",
+             class_name:"Excellent Gamblers", height_group:400,
+             status:"Running", updated: datetime},
             ...
          ],
        }"""
+    # Does NOT parse #last_run or #class_runs_left for prediction.
 
 def parse_class_name(text: str) -> tuple[str, int | None]:
     """'Excellent Gamblers (400)' -> ('Excellent Gamblers', 400)."""
 
-async def fetch_live_class_view(trial_external_id, sub_trial_id, ring_id, class_id) -> dict:
-    """GET .../results/live/.../view → {runs_complete, runs_total, runs:[...]}.
-       Reuse my_day.parse_my_day_detail for the entry rows."""
-
-async def list_live_class_views(trial_external_id: str) -> list[dict]:
-    """GET /trials/{id}/results/live → [{sub_trial_id, ring_id, class_id, href}]."""
+async def fetch_live_class_view(...) -> dict:
+    """Optional. GET .../view → completed runs for display after event ends.
+       Reuse my_day.parse_my_day_detail. Not used for prediction anchoring."""
 ```
 
-Parsing notes (from §2): ring label via regex `Ring\s*(\d+)`; height from the
-`(NNN)` suffix on `#class_name`; `#class_runs_left` via
-`r"(\d+)\s+runs left,\s+(\d+)\s+in class"`; result class from `#last_run`
-(`CLEAR!!`, `DQ`, `WD`, `F: N`, `: Xsec`, `: Ypts`). Normalise ring labels to the
-bare `"1"` form already used by `_bare_ring()`.
+Recommend **poll first** (~45–60 s); optional WS client later for faster boundary
+detection.
 
-Optional WS client (`app/scraper/live_socket.py`, `websockets` dep) for push;
-not required for v1 — polling the board is simpler and matches the existing
-httpx/RQ shape. Recommend **poll first, add WS later** if latency matters.
-
-### 5.2 Data model — `app/models.py` (+ `_migrate()`)
-
-New tables (additive; `create_all` + indexes via `_migrate`):
+### 6.2 Data model — `app/models.py` (+ `_migrate()`)
 
 ```python
-class RingLiveState(Base):                 # latest snapshot per ring
-    __tablename__ = "ring_live_states"
-    id; trial_id (FK, index)
-    ring_id            # TopDog internal "351"
-    ring_number        # bare "1"
-    class_name; height_group
-    status             # Running/Complete/Height Change/Not Running
-    runs_left; runs_in_class
-    last_run_cat
-    measured_pace_s    # current EWMA sec/dog for this (class,height)
-    offset_seconds     # +behind / -ahead vs paper
-    updated_at         # TopDog 'updated' (AEST)
-    observed_at        # our last successful poll
-    __table_args__ = (UniqueConstraint("trial_id", "ring_id"),)
+class EventLiveTiming(Base):
+    """One row per (trial, ring, class, height, day) segment."""
+    __tablename__ = "event_live_timings"
+    id
+    trial_id          # FK, index
+    day               # int, default 1
+    ring_id           # TopDog internal e.g. "351"
+    ring_number       # bare "1"
+    event_name
+    height_group
+    status            # latest: Running/Complete/Height Change/Not Running
+    started_at        # datetime, nullable until observed
+    finished_at       # datetime, nullable while in progress
+    pause_s           # accumulated non-Running time within segment
+    duration_s        # computed on close; nullable while running
+    start_confidence  # high | low
+    observed_at       # our last poll that touched this row
+    __table_args__ = (
+        UniqueConstraint("trial_id", "day", "ring_number", "event_name", "height_group"),
+    )
 
-class RingPaceSample(Base):                 # rolling pace evidence
-    __tablename__ = "ring_pace_samples"
-    id; trial_id (FK, index)
-    ring_id; class_name; height_group
-    runs_left; observed_at
-    # pace derived from consecutive rows; prune > 1 day old
+class EventDurationStat(Base):
+    """Rolling measured duration per (event_name, height_group) for estimation."""
+    __tablename__ = "event_duration_stats"
+    id
+    trial_id          # FK — scoped to trial day; optional global rollup later
+    event_name
+    height_group
+    sample_count
+    median_duration_s
+    last_duration_s
+    updated_at
 ```
 
-`Trial` gets `live_status` (`idle|live|done`) and `live_synced_at` columns so the
-poller knows which trials to track and the UI can show a "LIVE" badge.
+`Trial` gets `live_status` (`idle|live|done`) and `live_synced_at`.
 
-No change to `SessionEntry` / `CatalogueEntry` — they already hold the cat#,
-run_position, height_group, and ring_number needed to join to live state.
+**Removed vs earlier draft:** no `RingPaceSample`, no `last_run_cat`, no per-dog
+pace EWMA. `RingLiveState` is folded into `EventLiveTiming` + a lightweight
+per-ring "current segment" pointer if needed for fast reads.
 
-### 5.3 Worker jobs — `app/worker.py`
+### 6.3 Worker jobs — `app/worker.py`
 
 ```
 poll_live_trial_job(trial_id)
   1. fetch_ring_status(trial.external_id)
-  2. upsert RingLiveState per ring; append RingPaceSample
-  3. recompute measured_pace_s (EWMA, status==Running only) + offset_seconds
-  4. set trial.live_synced_at; flip live_status idle→live→done from progress/age
-  5. if a user's run just went Complete, optionally fetch_live_class_view to
-     capture the actual time/result
-  6. self-reschedule (enqueue_in ~45 s) while live_status == "live"
+  2. for each ring: apply_ring_transition(prev_snapshot, curr, observed_at)
+     → upsert EventLiveTiming; update EventDurationStat on close
+  3. set trial.live_synced_at; flip live_status
+  4. self-reschedule (~45 s) while live_status == "live"
 
-start_live_tracking_job(trial_id)   # kick off polling for a trial
-sweep_live_trials_job()             # cron: find active trials, ensure a poller
+start_live_tracking_job(trial_id)
+sweep_live_trials_job()          # cron: active trials today → ensure poller
 ```
 
-**Which trials to poll:** any `Trial` with `SessionEntry` rows whose date window
-is "today" (`trial_dates.trial_model_active_on`). `sweep_live_trials_job` runs
-from a periodic Nomad batch (every ~5 min, daytime AEST) and ensures one poller
-loop per active trial; each loop self-reschedules at the fast cadence and exits
-when the trial finishes or all rings are Complete. Hook
-`start_live_tracking_job` into the end of `sync_session_job` so opening the app
-on the day begins tracking immediately.
+Hook `start_live_tracking_job` into `sync_session_job`. Politeness: one board
+GET per poll; no per-class `/view` fetches unless the UI requests a result
+lookup for a finished run.
 
-Politeness: one board GET + at most a few `/view` GETs per poll; ~45 s cadence;
-`asyncio.Semaphore(4)`; back off on non-200.
-
-### 5.4 Prediction engine — `app/engine/predictor.py` + `app/routers/schedule.py`
-
-Add a live-aware layer without rewriting the paper layer:
+### 6.4 Prediction engine — `app/engine/predictor.py` + `app/routers/schedule.py`
 
 ```python
-def predict_run_live(*, now, dogs_ahead, pace_s, changeover_s=0) -> dict:
-    predicted_start = now + timedelta(seconds=dogs_ahead*pace_s + changeover_s)
+def predict_run_from_event(
+    *,
+    event_started_at: datetime,
+    run_position: int,
+    avg_time_per_dog: int,
+    position_override: int | None = None,
+    time_per_dog_override: int | None = None,
+) -> dict:
+    """Same shape as predict_run_from_block; anchor is measured event start."""
     ...
 ```
 
 In `_build_predictions()`:
 
-1. Load `RingLiveState` for the trial (one query) into a `{(ring, class, height)}`
-   map; skip the whole live path if none / trial not `live`.
-2. For each user run, resolve its (ring, class, height) and pick the §4.3 branch.
-   Use measured `pace_s` (fallback `session.tpd_for`) and the ring offset.
-3. Keep `flag_conflicts`, lunch handling, multi-day fan-out, and overrides exactly
-   as-is — they operate on the resulting `predicted_start` list.
-4. Per-run **manual overrides still win** (`position_override`,
-   `time_per_dog_override`) — live just changes the *default* anchor/pace.
+1. Load `EventLiveTiming` for the trial (+ `EventDurationStat` for estimates).
+2. Build per-ring timeline; for each user run pick §5.4 branch.
+3. `_compute_catalogue_blocks()` gains optional `event_timings` arg: seed each
+   ring's `cursor` from measured finishes + changeover instead of paper
+   `base_start`.
+4. Manual overrides (`position_override`, `time_per_dog_override`) still win.
+5. `flag_conflicts`, lunch handling, multi-day fan-out unchanged.
 
-`_compute_catalogue_blocks()` gains an optional `live_state` arg: when present,
-seed each ring's `cursor` from the live now-line and use measured pace /
-changeover per segment instead of constants; otherwise behave exactly as today.
+### 6.5 Routes & UI
 
-### 5.5 Routes & UI
-
-- `GET /s/{uuid}/trials/{id}/schedule` already renders predictions — add live
-  badges: per-run `source` styling, a ring-offset chip ("Ring 1 · 18 min behind"),
-  a trial progress bar (`run_count`/`runs_left`), and a "live as of HH:MM" stamp.
-- HTMX `hx-trigger="every 30s"` polling on the schedule (and/or a small
-  `GET /s/{uuid}/trials/{id}/schedule/live` partial) so the page self-refreshes
-  while the trial runs — the predictions are recomputed from the latest
-  `RingLiveState` on each request (cheap, read-only).
-- "Up next" emphasis: highlight the user's nearest upcoming run and show
-  `dogs_ahead` ("4 dogs to go").
-- Mark completed runs with their **actual** time/result when matched in `/view`.
-
-All web-tier code reads only the new tables — **no scraper imports in the web
-image**.
+- Schedule page: per-run badge `event_live` vs `scheduled`; ring offset chip;
+  "event started HH:MM" for running segments.
+- HTMX `hx-trigger="every 30s"` refresh while trial is live.
+- After a segment is **Complete**, optionally fetch `/view` once to show the
+  user's actual time/result (display only).
+- Remove "N dogs to go" live counter — replace with "event ~X min remaining"
+  (`typical_duration_s − (now − started_at)`), which is event-level.
 
 ---
 
-## 6. Matching live rows to a user's runs
+## 7. Matching segments to catalogue rows
 
-The join key is **cat#** within a trial (unique per dog per trial), already
-stored on `CatalogueEntry.cat_number` / `SessionEntry.cat_number`:
+Join by `(ring_number, event_name, height_group, day)` — no cat# required for
+prediction:
 
-- Board `last_run_cat` / `/view` row cat# → `CatalogueEntry(trial_id, cat_number)`
-  → `run_position`, `height_group`, `ring_number`.
-- The live `#class_name` ("Excellent Gamblers") maps to `event_name` via the same
-  case-insensitive containment used by `_match_class_schedule()`; height comes
-  from the `(NNN)` suffix. Ring maps via `_bare_ring()`.
-- NFC dogs (`...NFC`) already counted in `height_group_total`; the board counts
-  them in `in class` too, so count-anchoring stays consistent.
+- `#class_name` → `parse_class_name()` → match `CatalogueEntry.event_name` via
+  `_match_class_schedule()` containment rules.
+- Ring via `_bare_ring()`.
+- User runs already linked through `SessionEntry` → `CatalogueEntry`.
 
-No registration numbers or names needed — cat# is sufficient and robust.
+Cat# is only needed for the optional post-event result display from `/view`.
 
 ---
 
-## 7. Edge cases & risks
+## 8. Edge cases & risks
 
-- **Board lag vs. WS.** Polling can be up to one cadence stale; `updated`
-  timestamps let us detect and discount stale rings (§4.4). WS removes the lag if
-  we add it later.
-- **Scratches / late entries** change `in class` mid-day; count-anchoring uses the
-  live `in class`, so it self-corrects. cat#-anchoring is unaffected.
-- **Height-change / shared-judge gaps**: handled as separate changeover overhead,
-  not folded into per-dog pace (§4.2).
-- **Sub-trial / day ids** (`3063`) differ from the event id (`1307`); the board is
-  keyed by event id, `/view` needs the sub_trial id from the live-results menu.
-- **Multiple rings, one judge** (rings pause waiting): status flips to
-  Not Running/Height Change → we stop the pace clock and hold the offset.
-- **HTML drift.** Brittle parsing; mitigate with a golden fixture
-  (`tests/fixtures/live_1307.html` — capture from the live board at
-  implementation time and **anonymise dog/handler names** to match the repo's
-  existing `_ANONYMISED` convention) + a parser test that fails loudly if
-  `ring-card` / `#class_runs_left` / `#class_name` shapes change.
-- **Rate limiting.** Conservative cadence + low concurrency; back off on errors.
-- **No live data (no creds / pre-publish).** Everything degrades gracefully to
-  the current static predictions — live is strictly additive.
-- **Timezone.** `updated` is UTC; convert on ingest; keep prediction maths in
-  trial-local time (QLD = UTC+10, no DST; NSW has DST — store trial state/tz or
-  keep using the existing AEST handling and the trial's own date).
+- **Mid-event first poll.** Ring already Running when tracking starts →
+  `started_at = updated`, `start_confidence=low`; prediction still usable but
+  flagged. Improves once the *next* event boundary is observed.
+- **Height Change / Not Running pauses.** Accumulate into `pause_s`; don't close
+  the segment unless `class_name` changes or status → Complete.
+- **class_name encodes height** `(400)` — one board card = one height segment.
+  Multi-height classes appear as separate sequential segments on the ring; each
+  gets its own `EventLiveTiming` row and measured duration.
+- **Shared judge / ring idle.** `Not Running` between events is changeover, not
+  pause inside a segment (different `class_name`). Measured inter-event gap
+  updates `changeover_s` for that ring.
+- **Sub-trial / day ids.** Board is keyed by event id (`1307`); `day` comes from
+  catalogue/`ClassSchedule.day` when fanning out multi-day trials.
+- **Out-of-order runs.** Explicitly out of scope — we never read `#last_run` for
+  timing, so mis-ordered result entry cannot skew predictions.
+- **HTML drift.** Golden fixture (`tests/fixtures/live_1307.html`, capture +
+  anonymise) + parser test on `ring-card` / `#class_name` / `#status` / `#updated`.
+- **No live data.** Degrades to current static predictions.
 
 ---
 
-## 8. Rollout
+## 9. Rollout
 
-1. **Scraper commit.** `app/scraper/live.py` + golden fixture + parser test
-   (offline, no network) against an anonymised trial-1307 board and a `/view`.
-2. **Model + migration commit.** `RingLiveState`, `RingPaceSample`, `Trial`
-   live columns; extend `_migrate()`.
-3. **Worker commit.** `poll_live_trial_job` (+ sweep/start), hook into
-   `sync_session_job`; add a periodic Nomad batch trigger (daytime AEST) modelled
-   on `barhopping-results-cron.nomad.hcl`.
-4. **Engine commit.** `predict_run_live` + live branch in `_build_predictions` /
-   `_compute_catalogue_blocks`, behind a `LIVE_PREDICTIONS_ENABLED` flag.
-5. **UI commit.** Live badges, ring-offset chips, progress bar, HTMX auto-refresh.
-6. **Verify on a live trial day** (spot-check predictions vs. the TopDog board for
-   a known dog) and tune the EWMA window, confidence ramp, and stale threshold.
+1. **Scraper commit.** `app/scraper/live.py` (event-level fields only) + fixture +
+   parser test.
+2. **Model + migration.** `EventLiveTiming`, `EventDurationStat`, `Trial` live
+   columns; `_migrate()`.
+3. **Worker commit.** `poll_live_trial_job` with transition logic; sweep/start
+   hooks; Nomad cron trigger.
+4. **Engine commit.** `predict_run_from_event` + timeline branch in
+   `_build_predictions` / `_compute_catalogue_blocks`; `LIVE_PREDICTIONS_ENABLED`
+   flag.
+5. **UI commit.** Event-level badges, ring offset, optional post-event results.
+6. **Verify on a live trial day** — compare measured `started_at` / `finished_at`
+   to eScribe chat timestamps and paper schedule for a few known events.
 
 ### File-level change list
 
 ```
-new   app/scraper/live.py                  # board + /view parsers (worker image only)
-new   app/scraper/live_socket.py           # optional ActionCable client (later)
-edit  app/models.py                        # +RingLiveState, +RingPaceSample, +Trial cols
-edit  app/main.py                          # _migrate() for new tables/columns
-edit  app/worker.py                        # poll/sweep/start jobs; hook sync_session_job
-edit  app/engine/predictor.py             # +predict_run_live
-edit  app/routers/schedule.py             # live branch in _build_predictions/_compute_catalogue_blocks
-edit  app/templates/schedule.html         # live badges + HTMX auto-refresh
-edit  app/templates/partials/run_card.html# source/confidence styling, dogs-ahead
-new   barhopping-live-cron.nomad.hcl       # periodic sweep trigger (daytime AEST)
-new   tests/fixtures/live_1307.html        # golden board fixture (capture + anonymise)
-new   tests/fixtures/live_1307_class.html  # golden /view fixture (capture + anonymise)
-new   tests/test_live_parser.py            # offline parser tests
-new   tests/test_live_predictor.py         # re-anchoring maths tests
+new   app/scraper/live.py                  # ring board parser (event fields only)
+edit  app/models.py                        # +EventLiveTiming, +EventDurationStat, +Trial cols
+edit  app/main.py                          # _migrate()
+edit  app/worker.py                        # poll/sweep/start + transition logic
+edit  app/engine/predictor.py             # +predict_run_from_event
+edit  app/routers/schedule.py             # event-timeline branch in predictions/blocks
+edit  app/templates/schedule.html         # event-live badges + HTMX refresh
+edit  app/templates/partials/run_card.html
+new   barhopping-live-cron.nomad.hcl
+new   tests/fixtures/live_1307.html        # capture + anonymise
+new   tests/test_live_parser.py
+new   tests/test_live_predictor.py         # event boundary + chaining maths
 ```
 
-No new runtime deps for v1 (worker already has `httpx`/`bs4`); the optional WS
-client would add `websockets`. The web image needs nothing new.
+Optional later: `app/scraper/live_socket.py` for push boundaries; `/view` fetch
+for result display only.
+
+No new runtime deps for v1. Web image unchanged.
