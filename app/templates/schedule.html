@@ -11,24 +11,31 @@
 <p class="text-sm text-gray-500 mb-4">{{ trial.start_date.strftime("%-d %B %Y") }}</p>
 {% endif %}
 
-{% if day_blocks %}
 <nav class="flex rounded-xl bg-gray-100 p-1 mb-4" role="tablist" aria-label="Schedule views">
-  <a href="?tab=yours"
+  <a href="?tab=yours{% if selected_day and selected_tab == 'full' %}&day={{ selected_day }}{% endif %}"
      role="tab"
      aria-selected="{{ 'true' if selected_tab == 'yours' else 'false' }}"
      class="flex-1 text-center py-2 rounded-lg text-sm font-semibold transition {% if selected_tab == 'yours' %}bg-white shadow text-gray-900{% else %}text-gray-500 hover:text-gray-700{% endif %}">
     Your Schedule
   </a>
-  <a href="?tab=full{% if selected_day %}&day={{ selected_day }}{% endif %}"
+  <a href="?tab=friends"
+     role="tab"
+     aria-selected="{{ 'true' if selected_tab == 'friends' else 'false' }}"
+     class="flex-1 text-center py-2 rounded-lg text-sm font-semibold transition {% if selected_tab == 'friends' %}bg-white shadow text-gray-900{% else %}text-gray-500 hover:text-gray-700{% endif %}">
+    Friends
+  </a>
+  {% if day_blocks %}
+  <a href="?tab=full&day={{ selected_day }}"
      role="tab"
      aria-selected="{{ 'true' if selected_tab == 'full' else 'false' }}"
      class="flex-1 text-center py-2 rounded-lg text-sm font-semibold transition {% if selected_tab == 'full' %}bg-white shadow text-gray-900{% else %}text-gray-500 hover:text-gray-700{% endif %}">
     Full Day
   </a>
+  {% endif %}
 </nav>
-{% endif %}
 
-{% if not day_blocks or selected_tab == 'yours' %}
+{% if selected_tab == 'yours' %}
+
 {% if not predictions %}
 <div class="bg-gray-50 border border-gray-200 rounded-xl px-4 py-6 text-center text-sm text-gray-500">
   No entries found for this trial. <a href="/s/{{ uuid }}/setup" class="text-brand hover:underline">Re-sync</a> your entries.
@@ -43,16 +50,122 @@
   <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-2 {% if not loop.first %}mt-2{% endif %}">Day {{ p.day }}</p>
   {% set ns.prev_day = p.day %}
   {% endif %}
-  {% with %}
+  {% with p=p %}
   {% include "partials/run_card.html" %}
   {% endwith %}
   {% endfor %}
 </div>
 
 {% endif %}
+
+{% elif selected_tab == 'friends' %}
+
+<div class="mb-4 space-y-2">
+  <div class="flex items-start justify-between gap-2 flex-wrap">
+    <div class="text-xs text-gray-500 min-w-0">
+      {% if friend_data.state == 'available' %}
+      <p>Friend data from the catalogue{% if friend_data_str %} · updated {{ friend_data_str }}{% endif %}.</p>
+      {% elif friend_data.state == 'partial' %}
+      <p>Some days ready{% if friend_data_str %} · updated {{ friend_data_str }}{% endif %}.
+        {% if friend_data.pending_days %}Day{{ 's' if friend_data.pending_days | length > 1 else '' }}
+        {{ friend_data.pending_days | join(', ') }} not available yet.{% endif %}
+      </p>
+      {% elif friend_data.state == 'summary_only' %}
+      <p>Only a summary is available — individual competitors can't be looked up yet.</p>
+      {% else %}
+      <p>The trial running order hasn't been collected yet.</p>
+      {% endif %}
+    </div>
+    <form method="post" action="/s/{{ uuid }}/trials/{{ trial.id }}/friends/refresh" class="shrink-0">
+      <button type="submit"
+        class="text-xs font-semibold px-3 py-1.5 rounded-lg transition
+               {% if friend_data.state in ('none', 'summary_only') %}bg-brand text-white hover:bg-brand-dark{% else %}bg-gray-100 text-gray-700 hover:bg-gray-200{% endif %}
+               {% if refreshing_friends %}opacity-60{% endif %}"
+        {% if refreshing_friends %}disabled{% endif %}>
+        {% if refreshing_friends %}Collecting…{% elif friend_data.state in ('none', 'summary_only') %}Find friends' runs{% else %}Refresh friend data{% endif %}
+      </button>
+    </form>
+  </div>
+
+  {% if friend_error %}
+  <div class="bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm">{{ friend_error }}</div>
+  {% endif %}
+
+  {% if friend_data.state in ('none', 'summary_only') %}
+  <div class="bg-amber-50 border border-amber-200 rounded-xl px-4 py-4 text-sm text-amber-900">
+    <p class="font-medium mb-1">Running order needed</p>
+    <p class="text-amber-800">Friend lookup needs the full trial catalogue with handler names. Tap <strong>Find friends' runs</strong> to collect it from TopDog (requires your account to be connected).</p>
+  </div>
+  {% else %}
+  <form method="post" action="/s/{{ uuid }}/trials/{{ trial.id }}/friends" class="flex gap-2">
+    <input
+      name="query"
+      type="text"
+      value="{{ friend_query or '' }}"
+      placeholder="CAT# or handler name"
+      class="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand"
+    />
+    <button type="submit" class="bg-brand hover:bg-brand-dark text-white text-sm font-semibold px-4 py-2 rounded-lg shrink-0">Add</button>
+  </form>
+  <p class="text-xs text-gray-400">Handler pins include all their dogs. CAT# pins one dog if no handler name is listed.</p>
+  {% endif %}
+</div>
+
+{% if friend_matches %}
+<div class="mb-4 bg-white border border-gray-200 rounded-xl p-3 space-y-2">
+  <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider">Multiple matches — pick one</p>
+  {% for m in friend_matches %}
+  <form method="post" action="/s/{{ uuid }}/trials/{{ trial.id }}/friends" class="flex items-center justify-between gap-2 border border-gray-100 rounded-lg px-3 py-2">
+    <div class="min-w-0">
+      <p class="text-sm font-medium truncate">{{ m.handler_name }}</p>
+      <p class="text-xs text-gray-400 truncate">{{ m.dog_names | join(', ') }}</p>
+    </div>
+    <input type="hidden" name="handler_name" value="{{ m.handler_name }}" />
+    <button type="submit" class="text-xs font-semibold text-brand shrink-0">Add</button>
+  </form>
+  {% endfor %}
+</div>
 {% endif %}
 
-{% if day_blocks and selected_tab == 'full' %}
+{% if friend_groups %}
+<div class="space-y-6">
+  {% for g in friend_groups %}
+  <div>
+    <div class="flex items-center justify-between gap-2 mb-2">
+      <h2 class="text-sm font-semibold text-gray-700">{{ g.friend.label or g.friend.handler_name or ('CAT# ' ~ g.friend.cat_number) }}</h2>
+      <form method="post" action="/s/{{ uuid }}/trials/{{ trial.id }}/friends/{{ g.friend.id }}/delete">
+        <button type="submit" class="text-xs text-gray-400 hover:text-red-600" title="Remove">Remove</button>
+      </form>
+    </div>
+    {% if g.pending %}
+    <p class="text-sm text-gray-400">No runs found in the catalogue for this friend yet.</p>
+    {% else %}
+    {% set pred_days = g.predictions | map(attribute='day') | reject('none') | unique | list %}
+    <div class="space-y-3">
+      {% set ns = namespace(prev_day=0) %}
+      {% for p in g.predictions %}
+      {% if pred_days | length > 1 and p.day and p.day != ns.prev_day %}
+      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-1">Day {{ p.day }}</p>
+      {% set ns.prev_day = p.day %}
+      {% endif %}
+      {% with p=p %}
+      {% include "partials/run_card.html" %}
+      {% endwith %}
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% elif friend_data.state == 'available' and not friend_matches %}
+<div class="bg-gray-50 border border-gray-200 rounded-xl px-4 py-6 text-center text-sm text-gray-500">
+  No friends added yet. Enter a CAT# or handler name above.
+</div>
+{% endif %}
+
+{% elif selected_tab == 'full' %}
+
+{% if day_blocks %}
 <div>
   {% if available_days | length > 1 %}
   <div class="flex gap-2 mb-3 flex-wrap">
@@ -112,6 +225,12 @@
     {% endfor %}
   </div>
 </div>
+{% else %}
+<div class="bg-gray-50 border border-gray-200 rounded-xl px-4 py-6 text-center text-sm text-gray-500">
+  Full day schedule needs catalogue data for this trial.
+</div>
+{% endif %}
+
 {% endif %}
 
 <div class="mt-6 border-t pt-4 text-xs text-gray-400 space-y-1">

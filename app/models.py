@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime, date, time
 from sqlalchemy import (
@@ -37,6 +38,7 @@ class Session(Base):
     default_setup_mins = Column(Integer, default=10)
     default_walk_mins = Column(Integer, default=10)
     entries = relationship("SessionEntry", back_populates="session", cascade="all, delete-orphan")
+    friends = relationship("SessionFriend", back_populates="session", cascade="all, delete-orphan")
 
     def tpd_for(self, height_group: int | None, event_name: str | None = None) -> int:
         is_jumping = "jumping" in (event_name or "").lower()
@@ -69,6 +71,7 @@ class Trial(Base):
     catalogue_entries = relationship("CatalogueEntry", back_populates="trial", cascade="all, delete-orphan")
     class_schedules = relationship("ClassSchedule", back_populates="trial", cascade="all, delete-orphan")
     session_entries = relationship("SessionEntry", back_populates="trial")
+    session_friends = relationship("SessionFriend", back_populates="trial", cascade="all, delete-orphan")
     lunch_breaks = relationship("TrialLunchBreak", back_populates="trial", cascade="all, delete-orphan")
 
 
@@ -142,4 +145,34 @@ class SessionEntry(Base):
     trial = relationship("Trial", back_populates="session_entries")
     catalogue_entry = relationship("CatalogueEntry")
 
+
+class SessionFriend(Base):
+    __tablename__ = "session_friends"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_uuid = Column(String, ForeignKey("sessions.uuid"), nullable=False)
+    trial_id = Column(Integer, ForeignKey("trials.id"), nullable=False)
+    handler_name = Column(String, nullable=True)
+    cat_number = Column(String, nullable=True)
+    label = Column(String, nullable=True)
+    pin_key = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    session = relationship("Session", back_populates="friends")
+    trial = relationship("Trial", back_populates="session_friends")
+
+    __table_args__ = (UniqueConstraint("session_uuid", "trial_id", "pin_key"),)
+
+
+def normalize_handler_name(name: str | None) -> str:
+    if not name:
+        return ""
+    cleaned = re.sub(r"^[\s·]+", "", name.strip())
+    return re.sub(r"\s+", " ", cleaned).casefold()
+
+
+def friend_pin_key(*, handler_name: str | None = None, cat_number: str | None = None) -> str:
+    if handler_name:
+        return f"handler:{normalize_handler_name(handler_name)}"
+    return f"cat:{cat_number or ''}"
 

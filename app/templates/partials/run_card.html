@@ -2,13 +2,16 @@
 {% set card_id = p.card_id or p.entry_id %}
 <div
   id="run-card-{{ card_id }}"
-  class="bg-white rounded-xl border {% if p.conflict %}border-red-300{% elif p.nfc %}border-amber-200{% else %}border-gray-100{% endif %} shadow-sm px-4 py-3"
+  class="bg-white rounded-xl border {% if p.conflict %}border-red-300{% elif p.nfc %}border-amber-200{% elif p.is_friend %}border-sky-200{% else %}border-gray-100{% endif %} shadow-sm px-4 py-3"
 >
   <!-- Header row -->
   <div class="flex items-start justify-between gap-2">
     <div class="flex-1 min-w-0">
       <div class="flex items-center gap-2 flex-wrap">
         <p class="font-semibold text-sm">{{ p.dog_name or "Unknown" }}</p>
+        {% if p.is_friend %}
+        <span class="text-xs bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded font-medium">Friend</span>
+        {% endif %}
         {% if p.nfc %}
         <span class="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">NFC</span>
         {% endif %}
@@ -16,6 +19,9 @@
         <span class="text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-medium">Conflict</span>
         {% endif %}
       </div>
+      {% if p.handler_name and p.is_friend %}
+      <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.handler_name }}</p>
+      {% endif %}
       <p class="text-xs text-gray-500 mt-0.5 truncate">{{ p.event_name }}</p>
     </div>
     <div class="text-right shrink-0">
@@ -40,7 +46,7 @@
   </div>
 
   <!-- Inline edit form -->
-  {% if not p.pending %}
+  {% if not p.pending and not p.is_friend %}
   <details class="mt-3">
     <summary class="text-xs text-gray-400 cursor-pointer hover:text-gray-600 select-none">Adjust</summary>
     <form
