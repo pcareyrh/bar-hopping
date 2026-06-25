@@ -37,7 +37,7 @@ def test_trial_active_on_started_without_end_date():
 def test_parse_entries_dates_single_and_range():
     start, end = _parse_dates("Saturday, 22 June 2026")
     assert start == date(2026, 6, 22)
-    assert end == date(2026, 6, 22)
+    assert end is None
 
     start, end = _parse_dates("Saturday, 22 June 2026 - Sunday, 23 June 2026")
     assert start == date(2026, 6, 22)
