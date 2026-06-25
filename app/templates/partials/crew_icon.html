@@ -1,0 +1,9 @@
+<span
+  class="inline-flex items-center justify-center min-w-[2.75rem] min-h-[2.75rem] shrink-0"
+  title="{{ icon.title }}"
+>
+  <span class="inline-flex flex-col items-center justify-center w-7 h-7 rounded-lg {{ icon.bg_class }} {{ icon.text_class }} text-[10px] font-bold leading-none {% if icon.conflict %}ring-2 ring-red-400{% endif %}">
+    <span>{{ icon.handler_initial }}</span>
+    <span class="opacity-80">{{ icon.dog_initial }}</span>
+  </span>
+</span>
