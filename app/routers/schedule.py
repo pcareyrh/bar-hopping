@@ -68,7 +68,7 @@ def schedule_view(
     combined = list(predictions) + [p for g in friend_groups for p in g["predictions"]]
     flag_conflicts(combined)
 
-    selected_tab = tab if tab in ("yours", "friends", "full") else "yours"
+    selected_tab = tab if tab in ("yours", "friends", "crew", "full") else "yours"
 
     user_block_keys = {(p["day"], p["event_name"], p["height_group"]) for p in predictions if not p["pending"]}
     for b in day_blocks:
@@ -82,6 +82,9 @@ def schedule_view(
     selected_day = day if day in available_days else (available_days[0] if available_days else 1)
     day_dates = {b["day"]: b.get("trial_date") for b in day_blocks if not b.get("is_lunch_break")}
     day_blocks_view = [b for b in day_blocks if b["day"] == selected_day]
+
+    from app.crew import build_crew_grid
+    crew_grid = build_crew_grid(day_blocks, predictions, friend_groups, selected_day)
 
     return templates.TemplateResponse(
         request, "schedule.html",
@@ -107,6 +110,7 @@ def schedule_view(
             "friend_error": request.query_params.get("friend_error"),
             "friend_query": "",
             "friend_matches": [],
+            "crew_grid": crew_grid,
         },
     )
 
@@ -701,6 +705,7 @@ def add_friend_route(
                 "friend_query": query,
                 "friend_matches": matches,
                 "friend_error": None,
+                "crew_grid": {"rings": [], "rows": [], "crew_legend": []},
             },
         )
     redirect_url = f"/s/{uuid}/trials/{trial_id}/schedule?tab=friends"
