@@ -23,7 +23,14 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 @router.get("/s/{uuid}/trials/{trial_id}/schedule", response_class=HTMLResponse)
-def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = Depends(get_db), day: int | None = Query(default=None)):
+def schedule_view(
+    uuid: str,
+    trial_id: int,
+    request: Request,
+    db: DBSession = Depends(get_db),
+    day: int | None = Query(default=None),
+    tab: str = Query(default="yours"),
+):
     session = _get_session(uuid, db)
     trial = _get_trial(trial_id, db)
 
@@ -58,6 +65,7 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
     selected_day = day if day in available_days else (available_days[0] if available_days else 1)
     day_dates = {b["day"]: b.get("trial_date") for b in day_blocks if not b.get("is_lunch_break")}
     day_blocks_view = [b for b in day_blocks if b["day"] == selected_day]
+    selected_tab = tab if tab in ("yours", "full") and day_blocks else "yours"
 
     return templates.TemplateResponse(
         request, "schedule.html",
@@ -70,6 +78,7 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
             "available_days": available_days,
             "selected_day": selected_day,
             "day_dates": day_dates,
+            "selected_tab": selected_tab,
             "multi_day": len(available_days) > 1,
             "trial_start_str": format_predicted_time(
                 datetime.combine(trial.start_date or date.today(), trial_start)
