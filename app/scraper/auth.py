@@ -41,26 +41,49 @@ def _extract_csrf_token(html: str) -> str:
     raise ValueError("CSRF token not found on TopDog sign-in page")
 
 
-def _login_failed(response: httpx.Response) -> bool:
+def _redirected_to_sign_in(response: httpx.Response) -> bool:
     return "/users/sign_in" in str(response.url)
+
+
+def _raise_for_status(response: httpx.Response, *, context: str) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise ValueError(
+            f"TopDog {context} returned HTTP {e.response.status_code}"
+        ) from e
+
+
+def _ensure_authenticated(response: httpx.Response, *, context: str) -> None:
+    _raise_for_status(response, context=context)
+    if _redirected_to_sign_in(response):
+        raise ValueError(
+            f"TopDog authentication failed for {context} — redirected to {response.url}"
+        )
 
 
 async def _login(client: httpx.AsyncClient, email: str, password: str) -> None:
     """Submit the Devise sign-in form and raise if credentials are rejected."""
-    resp = await client.get(SIGN_IN_URL)
-    resp.raise_for_status()
+    try:
+        resp = await client.get(SIGN_IN_URL)
+    except httpx.RequestError as e:
+        raise ValueError(f"TopDog sign-in page request failed: {e}") from e
+    _raise_for_status(resp, context="sign-in page")
     token = _extract_csrf_token(resp.text)
-    resp = await client.post(
-        SIGN_IN_URL,
-        data={
-            "user[email]": email,
-            "user[password]": password,
-            "authenticity_token": token,
-        },
-        headers={"Referer": SIGN_IN_URL},
-    )
-    resp.raise_for_status()
-    if _login_failed(resp):
+    try:
+        resp = await client.post(
+            SIGN_IN_URL,
+            data={
+                "user[email]": email,
+                "user[password]": password,
+                "authenticity_token": token,
+            },
+            headers={"Referer": SIGN_IN_URL},
+        )
+    except httpx.RequestError as e:
+        raise ValueError(f"TopDog login request failed: {e}") from e
+    _raise_for_status(resp, context="login")
+    if _redirected_to_sign_in(resp):
         raise ValueError(f"TopDog login failed — check credentials (still at {resp.url})")
 
 
@@ -95,8 +118,11 @@ async def sync_user_entries(
         if on_progress:
             on_progress(0, 1)
         await _login(client, email, password)
-        resp = await client.get(ENTRIES_URL)
-        resp.raise_for_status()
+        try:
+            resp = await client.get(ENTRIES_URL)
+        except httpx.RequestError as e:
+            raise ValueError(f"TopDog /entries request failed: {e}") from e
+        _ensure_authenticated(resp, context="/entries")
         html = resp.text
 
     trials = _parse_entries_page(html)

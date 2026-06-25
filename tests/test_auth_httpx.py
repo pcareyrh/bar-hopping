@@ -115,6 +115,33 @@ def test_login_failure_still_on_sign_in():
     asyncio.run(run())
 
 
+def test_login_sign_in_page_http_error():
+    async def run():
+        client = _FakeClient()
+        client.on_get(
+            "/users/sign_in",
+            _FakeResponse("blocked", auth.SIGN_IN_URL, status_code=403),
+        )
+        with pytest.raises(ValueError, match="sign-in page returned HTTP 403"):
+            await auth._login(client, "user@example.com", "secret")
+
+    asyncio.run(run())
+
+
+def test_login_post_http_error():
+    async def run():
+        client = _FakeClient()
+        client.on_get("/users/sign_in", _FakeResponse(SIGN_IN_HTML, auth.SIGN_IN_URL))
+        client.on_post(
+            "/users/sign_in",
+            _FakeResponse("error", auth.SIGN_IN_URL, status_code=500),
+        )
+        with pytest.raises(ValueError, match="login returned HTTP 500"):
+            await auth._login(client, "user@example.com", "secret")
+
+    asyncio.run(run())
+
+
 def test_get_authed_cookies_returns_cookie_dict():
     async def run():
         fake = _FakeClient()
@@ -175,5 +202,22 @@ def test_sync_user_entries_bad_credentials_propagates():
         with patch("app.scraper.auth.httpx.AsyncClient", return_value=fake):
             with pytest.raises(ValueError, match="login failed"):
                 await auth.sync_user_entries("bad@example.com", "wrong")
+
+    asyncio.run(run())
+
+
+def test_sync_user_entries_rejects_sign_in_redirect():
+    async def run():
+        fake = _FakeClient()
+        fake.on_get("/users/sign_in", _FakeResponse(SIGN_IN_HTML, auth.SIGN_IN_URL))
+        fake.on_post(
+            "/users/sign_in",
+            _FakeResponse("<html>ok</html>", f"{auth.BASE_URL}/"),
+        )
+        fake.on_get("/entries", _FakeResponse(SIGN_IN_HTML, auth.SIGN_IN_URL))
+
+        with patch("app.scraper.auth.httpx.AsyncClient", return_value=fake):
+            with pytest.raises(ValueError, match="authentication failed for /entries"):
+                await auth.sync_user_entries("user@example.com", "secret")
 
     asyncio.run(run())
