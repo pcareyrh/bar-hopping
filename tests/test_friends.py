@@ -280,6 +280,18 @@ def test_schedule_friends_tab_route(client, client_db):
     assert "Find friends" in resp.text or "Refresh friend data" in resp.text
 
 
+def test_schedule_friends_tab_shows_friend_nav(client, client_db):
+    sess, trial = _seed_trial_with_handlers(client_db)
+    add_friend(session_uuid=sess.uuid, trial_id=trial.id, query="Jane Smith", db=client_db)
+    add_friend(session_uuid=sess.uuid, trial_id=trial.id, query="Bob Jones", db=client_db)
+    resp = client.get(f"/s/{sess.uuid}/trials/{trial.id}/schedule?tab=friends")
+    assert resp.status_code == 200
+    assert 'aria-label="Jump to friend"' in resp.text
+    assert 'href="#friend-' in resp.text
+    assert "Jane Smith" in resp.text
+    assert "Bob Jones" in resp.text
+
+
 def test_add_friend_post_route(client, client_db):
     sess, trial = _seed_trial_with_handlers(client_db)
     resp = client.post(
