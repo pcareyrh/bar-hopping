@@ -147,7 +147,10 @@ def extraction_prompt(*, page_range: str | None = None, state_hint: str | None =
         "- event_name must include the full class name and session code in parentheses, "
         'e.g. "Novice Agility (AD1)", "Excellent Jumping (JDX2)", "Masters Agility (ADM1)". '
         "Never return bare codes like AD1 or JDO alone.\n"
-        "- Infer day from visible headers: SATURDAY=1, SUNDAY=2, DAY N=N.\n"
+        "- Infer day from visible headers. When DAY N markers are present, use N as the "
+        "day number for all following entries until the next DAY marker — never restart "
+        "at SATURDAY=1 mid-catalogue. SATURDAY/SUNDAY map to days 1 and 2 only in "
+        "short two-day catalogues that lack DAY N markers.\n"
         "- Infer ring_number from RING N headers when visible.\n"
         "- Treat catalogue numbers ending in NFC as non-for-competition (nfc=true).\n"
         "- height_group must be one of 200, 300, 400, 500, 600.\n"
@@ -508,8 +511,12 @@ def _state_hint_from_entries(entries: list[dict]) -> str | None:
     if not entries:
         return None
     last = entries[-1]
+    days = [e.get("day") for e in entries if isinstance(e.get("day"), int)]
+    if not days:
+        return None
+    max_day = max(days)
     return (
-        f"day={last.get('day')}, event_name={last.get('event_name')}, "
+        f"max_day={max_day}, day={last.get('day')}, event_name={last.get('event_name')}, "
         f"height_group={last.get('height_group')}, ring_number={last.get('ring_number')}"
     )
 
