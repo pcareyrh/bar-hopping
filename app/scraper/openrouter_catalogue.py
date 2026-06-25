@@ -511,7 +511,10 @@ def _state_hint_from_entries(entries: list[dict]) -> str | None:
     if not entries:
         return None
     last = entries[-1]
-    max_day = max(e.get("day", 1) for e in entries if isinstance(e.get("day"), int))
+    days = [e.get("day") for e in entries if isinstance(e.get("day"), int)]
+    if not days:
+        return None
+    max_day = max(days)
     return (
         f"max_day={max_day}, day={last.get('day')}, event_name={last.get('event_name')}, "
         f"height_group={last.get('height_group')}, ring_number={last.get('ring_number')}"
