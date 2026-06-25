@@ -190,6 +190,38 @@ def test_sync_user_entries_parses_trials():
     asyncio.run(run())
 
 
+def test_sync_user_entries_keeps_in_progress_trial_with_only_start_date():
+    """Multi-day trials often show only the first day on /entries."""
+    html = """
+    <div class="tab-pane" id="t1307">
+      <strong>Agility Nationals</strong>
+      <small class="text-muted">Tuesday, 23 June 2026</small>
+      <table><tbody>
+        <tr><td>410</td><td>Fika</td><td>Masters Agility</td><td>400</td><td></td><td></td></tr>
+      </tbody></table>
+    </div>
+    """
+
+    async def run():
+        fake = _FakeClient()
+        fake.on_get("/users/sign_in", _FakeResponse(SIGN_IN_HTML, auth.SIGN_IN_URL))
+        fake.on_post(
+            "/users/sign_in",
+            _FakeResponse("<html>ok</html>", f"{auth.BASE_URL}/"),
+        )
+        fake.on_get("/entries", _FakeResponse(html, auth.ENTRIES_URL))
+
+        with patch("app.scraper.auth.httpx.AsyncClient", return_value=fake):
+            trials = await auth.sync_user_entries("user@example.com", "secret")
+
+        assert len(trials) == 1
+        assert trials[0]["external_id"] == "1307"
+        assert trials[0]["start_date"].year == 2026
+        assert trials[0]["end_date"] is None
+
+    asyncio.run(run())
+
+
 def test_sync_user_entries_bad_credentials_propagates():
     async def run():
         fake = _FakeClient()

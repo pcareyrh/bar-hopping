@@ -5,8 +5,6 @@ from datetime import datetime, date
 import httpx
 from bs4 import BeautifulSoup
 
-from app.trial_dates import trial_dict_active_on
-
 BASE_URL = "https://www.topdogevents.com.au"
 SIGN_IN_URL = f"{BASE_URL}/users/sign_in"
 ENTRIES_URL = f"{BASE_URL}/entries"
@@ -111,8 +109,9 @@ async def sync_user_entries(
             {trial_external_id, dog_name, event_name, height_group, cat_number}
         ]}
 
-    Trials that have not yet completed by the current day are returned (the
-    page itself shows upcoming only, but we also filter by date as a safeguard).
+    Trials still listed on /entries with at least one entry row are returned.
+    TopDog often shows only the first day for multi-day events, so we do not
+    filter by parsed dates (that incorrectly dropped in-progress nationals).
     """
     async with httpx.AsyncClient(**_client_kwargs()) as client:
         if on_progress:
@@ -125,9 +124,7 @@ async def sync_user_entries(
         _ensure_authenticated(resp, context="/entries")
         html = resp.text
 
-    trials = _parse_entries_page(html)
-    today = date.today()
-    return [t for t in trials if trial_dict_active_on(t, today=today)]
+    return [t for t in _parse_entries_page(html) if t.get("entries")]
 
 
 def _parse_entries_page(html: str) -> list[dict]:
@@ -204,7 +201,11 @@ def _parse_dates(text: str) -> tuple[date | None, date | None]:
             continue
     if not dates:
         return None, None
-    return min(dates), max(dates)
+    start = min(dates)
+    if len(dates) == 1:
+        # A lone date is often just the first day of a multi-day trial.
+        return start, None
+    return start, max(dates)
 
 
 def _clean(s: str) -> str:
