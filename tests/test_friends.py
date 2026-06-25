@@ -29,6 +29,7 @@ from app.friends import (
     catalogue_entries_for_friend,
 )
 from app.routers.schedule import _build_predictions, predict_catalogue_entry, build_catalogue_index
+from app.engine.predictor import flag_conflicts
 
 
 @pytest.fixture()
@@ -279,6 +280,18 @@ def test_schedule_friends_tab_route(client, client_db):
     assert "Find friends" in resp.text or "Refresh friend data" in resp.text
 
 
+def test_schedule_friends_tab_shows_friend_nav(client, client_db):
+    sess, trial = _seed_trial_with_handlers(client_db)
+    add_friend(session_uuid=sess.uuid, trial_id=trial.id, query="Jane Smith", db=client_db)
+    add_friend(session_uuid=sess.uuid, trial_id=trial.id, query="Bob Jones", db=client_db)
+    resp = client.get(f"/s/{sess.uuid}/trials/{trial.id}/schedule?tab=friends")
+    assert resp.status_code == 200
+    assert 'aria-label="Jump to friend"' in resp.text
+    assert 'href="#friend-' in resp.text
+    assert "Jane Smith" in resp.text
+    assert "Bob Jones" in resp.text
+
+
 def test_add_friend_post_route(client, client_db):
     sess, trial = _seed_trial_with_handlers(client_db)
     resp = client.post(
@@ -293,3 +306,53 @@ def test_add_friend_post_route(client, client_db):
 def test_friend_pin_key():
     assert friend_pin_key(handler_name="Jane Smith") == "handler:jane smith"
     assert friend_pin_key(cat_number="410") == "cat:410"
+
+
+def test_friend_conflict_with_your_run(db):
+    sess, trial = _seed_trial_with_handlers(db)
+    ce_user = db.query(CatalogueEntry).filter(CatalogueEntry.cat_number == "520").first()
+    db.add(SessionEntry(
+        session_uuid=sess.uuid, trial_id=trial.id, dog_name="Bolt",
+        event_name="Novice Agility", cat_number="520", height_group=400,
+        catalogue_entry_id=ce_user.id,
+    ))
+    db.add(ClassSchedule(
+        trial_id=trial.id, day=1, ring_number="1",
+        class_name="Novice Agility", scheduled_start=time(9, 0),
+    ))
+    db.commit()
+
+    mine = _build_predictions(sess, trial, db, day_blocks=[])
+    add_friend(session_uuid=sess.uuid, trial_id=trial.id, query="Jane Smith", db=db)
+    groups = build_friend_predictions(sess, trial, db, day_blocks=[])
+    friend_preds = groups[0]["predictions"]
+    # Jane's Agility run is position 3, user's Bolt is position 2 — same class, close times.
+    combined = mine + friend_preds
+    flag_conflicts(combined)
+
+    jane_agility = next(p for p in friend_preds if p["event_name"] == "Novice Agility")
+    assert jane_agility["conflict"]
+    assert jane_agility["conflict_with_yours"]
+    assert any(not c["is_friend"] for c in jane_agility["conflicts_with"])
+    assert jane_agility["conflicts_with"][0]["dog_name"] == "Bolt"
+
+
+def test_friend_conflict_with_another_friend(db):
+    sess, trial = _seed_trial_with_handlers(db)
+    db.add(ClassSchedule(
+        trial_id=trial.id, day=1, ring_number="1",
+        class_name="Novice Agility", scheduled_start=time(9, 0),
+    ))
+    db.commit()
+    add_friend(session_uuid=sess.uuid, trial_id=trial.id, query="Jane Smith", db=db)
+    add_friend(session_uuid=sess.uuid, trial_id=trial.id, query="Bob Jones", db=db)
+    groups = build_friend_predictions(sess, trial, db, day_blocks=[])
+    friend_preds = [p for g in groups for p in g["predictions"]]
+    flag_conflicts(friend_preds)
+
+    agility = [p for p in friend_preds if p["event_name"] == "Novice Agility"]
+    assert len(agility) == 2
+    for p in agility:
+        assert p["conflict"]
+        assert not p["conflict_with_yours"]
+        assert all(c["is_friend"] for c in p["conflicts_with"])

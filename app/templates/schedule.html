@@ -128,9 +128,22 @@
 {% endif %}
 
 {% if friend_groups %}
+{% if friend_groups | length > 1 %}
+<nav class="flex gap-2 mb-4 flex-wrap" aria-label="Jump to friend">
+  {% for g in friend_groups %}
+  {% set friend_name = g.friend.label or g.friend.handler_name or ('CAT# ' ~ g.friend.cat_number) %}
+  {% set friend_initial = (g.friend.handler_name or g.friend.label or g.friend.cat_number or '?')[:1] | upper %}
+  <a href="#friend-{{ g.friend.id }}"
+     class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition bg-gray-100 text-gray-600 hover:bg-gray-200">
+    <span class="flex items-center justify-center w-5 h-5 rounded-full bg-sky-100 text-sky-700 text-[10px] font-bold shrink-0">{{ friend_initial }}</span>
+    <span class="truncate max-w-[8rem]">{{ friend_name }}</span>
+  </a>
+  {% endfor %}
+</nav>
+{% endif %}
 <div class="space-y-6">
   {% for g in friend_groups %}
-  <div>
+  <div id="friend-{{ g.friend.id }}" class="scroll-mt-4">
     <div class="flex items-center justify-between gap-2 mb-2">
       <h2 class="text-sm font-semibold text-gray-700">{{ g.friend.label or g.friend.handler_name or ('CAT# ' ~ g.friend.cat_number) }}</h2>
       <form method="post" action="/s/{{ uuid }}/trials/{{ trial.id }}/friends/{{ g.friend.id }}/delete">

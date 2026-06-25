@@ -16,13 +16,32 @@
         <span class="text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">NFC</span>
         {% endif %}
         {% if p.conflict %}
+        {% if p.is_friend and p.conflict_with_yours %}
+        <span class="text-xs bg-red-100 text-red-700 px-1.5 py-0.5 rounded font-medium">Clashes with your run</span>
+        {% elif p.is_friend %}
+        <span class="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">Friend conflict</span>
+        {% else %}
         <span class="text-xs bg-red-100 text-red-600 px-1.5 py-0.5 rounded font-medium">Conflict</span>
+        {% endif %}
         {% endif %}
       </div>
       {% if p.handler_name and p.is_friend %}
       <p class="text-xs text-gray-400 mt-0.5 truncate">{{ p.handler_name }}</p>
       {% endif %}
       <p class="text-xs text-gray-500 mt-0.5 truncate">{{ p.event_name }}</p>
+      {% if p.conflict and p.is_friend and p.conflicts_with %}
+      <div class="mt-1 space-y-0.5">
+        {% for c in p.conflicts_with %}
+        <p class="text-xs {% if not c.is_friend %}text-red-600 font-medium{% else %}text-orange-600{% endif %}">
+          {% if not c.is_friend %}
+          Your {{ c.dog_name or "run" }}{% if c.event_name %} · {{ c.event_name }}{% endif %}{% if c.predicted_start_str %} at {{ c.predicted_start_str }}{% endif %}
+          {% else %}
+          {{ c.handler_name or c.dog_name or "Friend" }}{% if c.dog_name and c.handler_name %} ({{ c.dog_name }}){% endif %}{% if c.event_name %} · {{ c.event_name }}{% endif %}{% if c.predicted_start_str %} at {{ c.predicted_start_str }}{% endif %}
+          {% endif %}
+        </p>
+        {% endfor %}
+      </div>
+      {% endif %}
     </div>
     <div class="text-right shrink-0">
       {% if p.predicted_start_str %}
