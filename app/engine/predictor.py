@@ -65,15 +65,30 @@ def format_predicted_time(dt: datetime) -> str:
     return dt.strftime("%-I:%M %p")
 
 
+def _conflict_target(entry: dict) -> dict:
+    return {
+        "dog_name": entry.get("dog_name"),
+        "event_name": entry.get("event_name"),
+        "predicted_start_str": entry.get("predicted_start_str"),
+        "is_friend": entry.get("is_friend", False),
+        "handler_name": entry.get("handler_name"),
+    }
+
+
 def flag_conflicts(predictions: list[dict], buffer_mins: int = 5) -> list[dict]:
     """Mark entries whose predicted times overlap within buffer_mins of another entry.
 
     Entries sharing the same catalogue_entry_id (i.e. duplicates of the same
     dog in the same class) are not considered conflicts with each other.
+
+    Sets ``conflict_with_yours`` when a clash is with one of the user's runs,
+    and ``conflicts_with`` with details for each overlapping entry (yours first).
     """
     buffer = timedelta(minutes=buffer_mins)
     for i, a in enumerate(predictions):
         a["conflict"] = False
+        a["conflict_with_yours"] = False
+        a["conflicts_with"] = []
         if a["predicted_start"] is None:
             continue
         a_cat_id = a.get("catalogue_entry_id")
@@ -87,5 +102,8 @@ def flag_conflicts(predictions: list[dict], buffer_mins: int = 5) -> list[dict]:
             diff = abs(a["predicted_start"] - b["predicted_start"])
             if diff <= buffer:
                 a["conflict"] = True
-                break
+                a["conflicts_with"].append(_conflict_target(b))
+                if not b.get("is_friend"):
+                    a["conflict_with_yours"] = True
+        a["conflicts_with"].sort(key=lambda c: c["is_friend"])
     return predictions

@@ -532,6 +532,8 @@ def predict_catalogue_entry(
         "position_override": position_override,
         "time_per_dog_override": time_per_dog_override,
         "conflict": False,
+        "conflict_with_yours": False,
+        "conflicts_with": [],
         "is_friend": is_friend,
         "friend_id": friend_id,
     }
@@ -599,6 +601,8 @@ def _build_predictions(
                 "position_override": entry.position_override,
                 "time_per_dog_override": entry.time_per_dog_override,
                 "conflict": False,
+                "conflict_with_yours": False,
+                "conflicts_with": [],
                 "is_friend": False,
             })
             continue
