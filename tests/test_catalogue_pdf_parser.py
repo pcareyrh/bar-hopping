@@ -435,3 +435,47 @@ def test_format_f_multiple_rings_same_day():
     assert snooker["ring_number"] == "1"
     assert jumping["ring_number"] == "2"
     assert snooker["day"] == jumping["day"] == 2
+
+
+def _nationals_day_page(day: int, dog: str) -> list[dict]:
+    return [
+        _line([_w(f"DAY {day}", 48)]),
+        _line([_w("RING 1", 51)]),
+        _line([_w(f"NOVICE SNOOKER (SD) - 400 WALKING GROUP {day}", 120)]),
+        _line([_w("CAT# DOG BREED HANDLER", 156)]),
+        _line([_w("400", 57), _w(dog, 91), _w("Breed", 261), _w(f"Handler{day}", 405)]),
+    ]
+
+
+def test_format_f_six_day_nationals_keeps_all_days():
+    pages = [_nationals_day_page(day, f"Dog{day}") for day in range(1, 7)]
+    entries = _parse_pdf_pages(pages)
+    assert {e["day"] for e in entries} == {1, 2, 3, 4, 5, 6}
+    assert len(entries) == 6
+
+
+def test_format_f_six_day_nationals_survives_weekend_running_order_headers():
+    # Running-order pages can embed Pawlympics-style SAT/SUN headers between
+    # weekday DAY N sections. These must not remap days 4-5 back to 1-2.
+    pages = [
+        _nationals_day_page(1, "Dog1"),
+        _nationals_day_page(2, "Dog2"),
+        _nationals_day_page(3, "Dog3"),
+        [
+            _line([_w("SATURDAY - RING 1 - AM Judge Someone", 50)]),
+            _line([_w("AD1", 268)]),
+        ],
+        _nationals_day_page(4, "Dog4"),
+        [
+            _line([_w("SUNDAY - RING 1 - Judges Someone", 50)]),
+            _line([_w("ADO", 268)]),
+        ],
+        _nationals_day_page(5, "Dog5"),
+        _nationals_day_page(6, "Dog6"),
+    ]
+    entries = _parse_pdf_pages(pages)
+    assert {e["day"] for e in entries} == {1, 2, 3, 4, 5, 6}
+    by_day = {e["day"]: e["dog_name"] for e in entries}
+    assert by_day[2] == "Dog2"
+    assert by_day[3] == "Dog3"
+    assert by_day[4] == "Dog4"

@@ -164,6 +164,7 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
     current_day = 1
     seen_events: set[str] = set()
     is_nationals_format = False
+    marked_day: int | None = None
     # Keyed by (event, height, ring) so the same class running in two rings
     # (or AM/PM sessions distinguished by event_name) gets independent buckets.
     height_groups: dict[tuple, list] = {}
@@ -174,6 +175,28 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
         height_groups = {}
         seen_events = set()
         current_day = new_day
+
+    def _apply_sat_sun_day_change(day_str: str) -> None:
+        """Apply day transitions from SATURDAY/SUNDAY headers.
+
+        In Nationals (DAY N) catalogues these headers label rings within a
+        calendar day and must not remap to day 1/2. When a weekend header
+        appears after entries have accumulated on a higher day number, treat
+        it as the next sequential day (e.g. SAT after DAY 3 Friday → day 4).
+        """
+        nonlocal current_day, marked_day
+        legacy = 2 if "sun" in day_str.lower() else 1
+        if is_nationals_format:
+            if legacy < current_day:
+                if height_groups:
+                    _flush_and_reset_to_day(current_day + 1)
+                    marked_day = None
+                elif marked_day != current_day:
+                    _flush_and_reset_to_day(current_day + 1)
+                    marked_day = None
+            return
+        if legacy != current_day:
+            _flush_and_reset_to_day(legacy)
 
     for lines in pages_lines:
         for line in lines:
@@ -186,6 +209,7 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                 day_num = int(nationals_day_m.group(1))
                 if day_num != current_day:
                     _flush_and_reset_to_day(day_num)
+                marked_day = day_num
                 # Reset stale event state so the first unrecognised header on
                 # the new day doesn't inherit the previous day's event.
                 current_event = None
@@ -211,9 +235,7 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
             if ring_day_m:
                 day_str = ring_day_m.group(1)
                 ring_str = ring_day_m.group(2)
-                day_num = 2 if "sun" in day_str.lower() else 1
-                if day_num != current_day:
-                    _flush_and_reset_to_day(day_num)
+                _apply_sat_sun_day_change(day_str)
                 current_ring = ring_str
                 continue
 
@@ -221,9 +243,9 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
             ring_m = _RE_RING_DAY.match(full_text)
             if ring_m:
                 current_ring = ring_m.group(1)
-                day_num = 2 if ring_m.group(2).upper().startswith("SUN") else 1
-                if day_num != current_day:
-                    _flush_and_reset_to_day(day_num)
+                if not is_nationals_format:
+                    day_str = ring_m.group(2)
+                    _apply_sat_sun_day_change(day_str)
                 continue
 
             # Format F ring header (Nationals) — standalone "RING N" (all caps).
@@ -238,11 +260,12 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
             if header_m:
                 day_str = header_m.group(1).lower()
                 event = header_m.group(2).strip()
-                day_num = 2 if "sun" in day_str else 1
-                if event in seen_events and day_num == current_day:
-                    _flush_and_reset_to_day(current_day + 1)
-                elif day_num != current_day:
-                    _flush_and_reset_to_day(day_num)
+                if not is_nationals_format:
+                    day_num = 2 if "sun" in day_str else 1
+                    if event in seen_events and day_num == current_day:
+                        _flush_and_reset_to_day(current_day + 1)
+                    elif day_num != current_day:
+                        _flush_and_reset_to_day(day_num)
                 current_event = event
                 current_header_height = None
                 current_ring = None
@@ -257,9 +280,10 @@ def _parse_pdf_pages(pages_lines: list[list[dict]]) -> list[dict]:
                 event = _event_name_from_code(code)
                 if not event:
                     continue
-                day_num = 2 if "sun" in day_str.lower() else 1
-                if day_num != current_day:
-                    _flush_and_reset_to_day(day_num)
+                if not is_nationals_format:
+                    day_num = 2 if "sun" in day_str.lower() else 1
+                    if day_num != current_day:
+                        _flush_and_reset_to_day(day_num)
                 current_event = event
                 current_header_height = None
                 current_ring = ring_str

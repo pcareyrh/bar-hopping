@@ -415,8 +415,8 @@ def test_extract_catalogue_passes_previous_chunk_hint(monkeypatch):
     assert max_active == 1
     assert calls == [
         ("1-1", None),
-        ("2-2", "day=1, event_name=Event 1-1, height_group=200, ring_number=Ring 1-1"),
-        ("3-3", "day=1, event_name=Event 2-2, height_group=200, ring_number=Ring 2-2"),
+        ("2-2", "max_day=1, day=1, event_name=Event 1-1, height_group=200, ring_number=Ring 1-1"),
+        ("3-3", "max_day=1, day=1, event_name=Event 2-2, height_group=200, ring_number=Ring 2-2"),
     ]
     assert [e["cat_number"] for e in entries] == ["11", "22", "33"]
 
