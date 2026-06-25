@@ -7,8 +7,8 @@ trial id.
 """
 import re
 from datetime import date, datetime
+
 import httpx
-from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 
 BASE_URL = "https://www.topdogevents.com.au"
@@ -27,7 +27,7 @@ async def fetch_trial_detail(external_id: str) -> dict:
     """Fetch and parse a trial detail page using httpx (no browser required).
 
     Used by refresh_trial_docs_job to update catalogue/schedule URLs for
-    existing trials without spinning up Playwright.
+    existing trials.
     """
     url = f"{BASE_URL}/trials/{external_id}"
     async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
@@ -37,41 +37,29 @@ async def fetch_trial_detail(external_id: str) -> dict:
 
 
 async def scrape_trial_detail(external_id: str) -> dict:
-    """Fetch a single trial detail page (own browser — for one-off use)."""
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        page = await browser.new_page()
-        result = await _scrape_trial_detail_with_page(page, external_id)
-        await browser.close()
-    return result
+    """Fetch a single trial detail page."""
+    return await fetch_trial_detail(external_id)
 
 
 async def scrape_trial_details_batch(external_ids: list[str], on_progress=None) -> list[dict]:
-    """Fetch many trial detail pages reusing a single browser."""
+    """Fetch many trial detail pages reusing a single httpx client."""
     results: list[dict] = []
     if not external_ids:
         return results
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch()
-        page = await browser.new_page()
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20) as client:
         total = len(external_ids)
         for i, external_id in enumerate(external_ids, start=1):
             if on_progress:
                 on_progress(i, total)
             try:
-                results.append(await _scrape_trial_detail_with_page(page, external_id))
+                url = f"{BASE_URL}/trials/{external_id}"
+                resp = await client.get(url)
+                resp.raise_for_status()
+                results.append(_parse_trial_detail(external_id, resp.text))
             except Exception:
                 results.append({"external_id": external_id})
-        await browser.close()
     return results
-
-
-async def _scrape_trial_detail_with_page(page, external_id: str) -> dict:
-    url = f"{BASE_URL}/trials/{external_id}"
-    await page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-    content = await page.content()
-    return _parse_trial_detail(external_id, content)
 
 
 def _parse_trial_detail(external_id: str, html: str) -> dict:
