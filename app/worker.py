@@ -298,7 +298,7 @@ def _merge_class_schedules(db, trial_id: int, schedules: list[dict]) -> None:
         db.add(ClassSchedule(trial_id=trial_id, **s))
 
 
-def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> None:
+def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None, friends_mode: bool = False) -> None:
     """Download and parse catalogue and schedule data for a trial.
 
     Preferred source: TopDog's authenticated /trials/{id}/my_day dashboard,
@@ -412,8 +412,15 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
             if trial.catalogue_doc_url:
                 try:
                     if trial.catalogue_doc_url.rstrip("/").endswith("/entries"):
-                        log.info("refresh_trial_docs_job: fetching HTML entries from %s", trial.catalogue_doc_url)
-                        entries = await download_and_parse_catalogue_entries(trial.catalogue_doc_url)
+                        if friends_mode:
+                            log.info(
+                                "refresh_trial_docs_job: friends_mode — skipping HTML entries summary for trial %s",
+                                trial.external_id,
+                            )
+                            entries = []
+                        else:
+                            log.info("refresh_trial_docs_job: fetching HTML entries from %s", trial.catalogue_doc_url)
+                            entries = await download_and_parse_catalogue_entries(trial.catalogue_doc_url)
                     else:
                         log.info("refresh_trial_docs_job: fetching catalogue from %s", trial.catalogue_doc_url)
                         entries = await download_and_parse_catalogue(
@@ -448,6 +455,11 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None) -> No
             db.close()
 
     asyncio.run(_run())
+
+
+def collect_friend_data_job(trial_id: int, session_uuid: str | None = None) -> None:
+    """my_day-first refresh for the Friends tab; never downgrades to HTML summary."""
+    refresh_trial_docs_job(trial_id, session_uuid, friends_mode=True)
 
 
 def upload_catalogue_job(trial_id: int, data: bytes, content_type: str) -> None:

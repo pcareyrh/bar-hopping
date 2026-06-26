@@ -1,45 +1,99 @@
 """Authenticate to TopDog and scrape upcoming trials + entries from /entries."""
 import re
 from datetime import datetime, date
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+
+import httpx
 from bs4 import BeautifulSoup
 
-from app.trial_dates import trial_dict_active_on
-
 BASE_URL = "https://www.topdogevents.com.au"
+SIGN_IN_URL = f"{BASE_URL}/users/sign_in"
+ENTRIES_URL = f"{BASE_URL}/entries"
+
+_DEFAULT_HEADERS = {
+    "User-Agent": "BarHopping/1.0",
+    "Accept": "text/html,application/xhtml+xml",
+}
 
 HEIGHT_RE = re.compile(r"^\s*(200|300|400|500|600)\s*(mm)?\s*$", re.I)
 CAT_RE = re.compile(r"^\s*(\d{2,4})(NFC)?\s*$", re.I)
 DATE_RE = re.compile(r"(?:\w+day,\s*)?(\d{1,2})\s+(\w+)\s+(\d{4})")
 
 
-async def _login(page, email: str, password: str) -> None:
-    """Submit the Devise sign-in form and raise if credentials are rejected."""
-    await page.goto(f"{BASE_URL}/users/sign_in", wait_until="domcontentloaded", timeout=20_000)
-    await page.fill("input[name='user[email]']", email)
-    await page.fill("input[name='user[password]']", password)
-    try:
-        async with page.expect_navigation(wait_until="domcontentloaded", timeout=20_000):
-            await page.click("button[type='submit'], input[type='submit']")
-    except PlaywrightTimeout:
-        pass
+def _client_kwargs() -> dict:
+    return {
+        "follow_redirects": True,
+        "timeout": 30,
+        "headers": _DEFAULT_HEADERS,
+    }
 
-    if "/users/sign_in" in page.url or page.url.rstrip("/").endswith("/users/sign_in"):
-        raise ValueError(f"TopDog login failed — check credentials (still at {page.url})")
+
+def _extract_csrf_token(html: str) -> str:
+    """Read Devise CSRF token from the sign-in page (meta tag or hidden input)."""
+    soup = BeautifulSoup(html, "html.parser")
+    meta = soup.find("meta", attrs={"name": "csrf-token"})
+    if meta and meta.get("content"):
+        return meta["content"]
+    inp = soup.find("input", attrs={"name": "authenticity_token"})
+    if inp and inp.get("value"):
+        return inp["value"]
+    raise ValueError("CSRF token not found on TopDog sign-in page")
+
+
+def _redirected_to_sign_in(response: httpx.Response) -> bool:
+    return "/users/sign_in" in str(response.url)
+
+
+def _raise_for_status(response: httpx.Response, *, context: str) -> None:
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as e:
+        raise ValueError(
+            f"TopDog {context} returned HTTP {e.response.status_code}"
+        ) from e
+
+
+def _ensure_authenticated(response: httpx.Response, *, context: str) -> None:
+    _raise_for_status(response, context=context)
+    if _redirected_to_sign_in(response):
+        raise ValueError(
+            f"TopDog authentication failed for {context} — redirected to {response.url}"
+        )
+
+
+async def _login(client: httpx.AsyncClient, email: str, password: str) -> None:
+    """Submit the Devise sign-in form and raise if credentials are rejected."""
+    try:
+        resp = await client.get(SIGN_IN_URL)
+    except httpx.RequestError as e:
+        raise ValueError(f"TopDog sign-in page request failed: {e}") from e
+    _raise_for_status(resp, context="sign-in page")
+    token = _extract_csrf_token(resp.text)
+    try:
+        resp = await client.post(
+            SIGN_IN_URL,
+            data={
+                "user[email]": email,
+                "user[password]": password,
+                "authenticity_token": token,
+            },
+            headers={"Referer": SIGN_IN_URL},
+        )
+    except httpx.RequestError as e:
+        raise ValueError(f"TopDog login request failed: {e}") from e
+    _raise_for_status(resp, context="login")
+    if _redirected_to_sign_in(resp):
+        raise ValueError(f"TopDog login failed — check credentials (still at {resp.url})")
+
+
+def _cookies_dict(client: httpx.AsyncClient) -> dict[str, str]:
+    return {name: value for name, value in client.cookies.items()}
 
 
 async def get_authed_cookies(email: str, password: str) -> dict[str, str]:
     """Log in and return the session cookies as a dict suitable for httpx."""
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(args=["--no-sandbox"])
-        context = await browser.new_context()
-        page = await context.new_page()
-        try:
-            await _login(page, email, password)
-            cookies = await context.cookies()
-        finally:
-            await browser.close()
-    return {c["name"]: c["value"] for c in cookies}
+    async with httpx.AsyncClient(**_client_kwargs()) as client:
+        await _login(client, email, password)
+        return _cookies_dict(client)
 
 
 async def sync_user_entries(
@@ -55,30 +109,22 @@ async def sync_user_entries(
             {trial_external_id, dog_name, event_name, height_group, cat_number}
         ]}
 
-    Trials that have not yet completed by the current day are returned (the
-    page itself shows upcoming only, but we also filter by date as a safeguard).
+    Trials still listed on /entries with at least one entry row are returned.
+    TopDog often shows only the first day for multi-day events, so we do not
+    filter by parsed dates (that incorrectly dropped in-progress nationals).
     """
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(args=["--no-sandbox"])
-        context = await browser.new_context()
-        page = await context.new_page()
-
+    async with httpx.AsyncClient(**_client_kwargs()) as client:
         if on_progress:
             on_progress(0, 1)
-
+        await _login(client, email, password)
         try:
-            await _login(page, email, password)
-        except ValueError:
-            await browser.close()
-            raise
+            resp = await client.get(ENTRIES_URL)
+        except httpx.RequestError as e:
+            raise ValueError(f"TopDog /entries request failed: {e}") from e
+        _ensure_authenticated(resp, context="/entries")
+        html = resp.text
 
-        await page.goto(f"{BASE_URL}/entries", wait_until="domcontentloaded", timeout=30_000)
-        html = await page.content()
-        await browser.close()
-
-    trials = _parse_entries_page(html)
-    today = date.today()
-    return [t for t in trials if trial_dict_active_on(t, today=today)]
+    return [t for t in _parse_entries_page(html) if t.get("entries")]
 
 
 def _parse_entries_page(html: str) -> list[dict]:
@@ -155,7 +201,11 @@ def _parse_dates(text: str) -> tuple[date | None, date | None]:
             continue
     if not dates:
         return None, None
-    return min(dates), max(dates)
+    start = min(dates)
+    if len(dates) == 1:
+        # A lone date is often just the first day of a multi-day trial.
+        return start, None
+    return start, max(dates)
 
 
 def _clean(s: str) -> str:

@@ -7,6 +7,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session as DBSession
 
+from collections import defaultdict
+
 from app.database import get_db
 from app.models import (
     Session,
@@ -34,7 +36,14 @@ templates = Jinja2Templates(directory="app/templates")
 
 
 @router.get("/s/{uuid}/trials/{trial_id}/schedule", response_class=HTMLResponse)
-def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = Depends(get_db), day: int | None = Query(default=None)):
+def schedule_view(
+    uuid: str,
+    trial_id: int,
+    request: Request,
+    db: DBSession = Depends(get_db),
+    day: int | None = Query(default=None),
+    tab: str = Query(default="yours"),
+):
     session = _get_session(uuid, db)
     trial = _get_trial(trial_id, db)
 
@@ -67,7 +76,22 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
         event_timings=event_timings,
         duration_stats=duration_stats,
     )
-    flag_conflicts(predictions)
+
+    from app.friends import friend_data_state, build_friend_predictions, format_scraped_at
+    from app.models import SessionFriend
+    data_state = friend_data_state(trial, db)
+    has_friends = db.query(SessionFriend.id).filter(
+        SessionFriend.session_uuid == uuid,
+        SessionFriend.trial_id == trial_id,
+    ).first() is not None
+    friend_groups = build_friend_predictions(
+        session, trial, db, day_blocks=day_blocks, lunch_breaks=lunch_breaks,
+    ) if has_friends else []
+
+    combined = list(predictions) + [p for g in friend_groups for p in g["predictions"]]
+    flag_conflicts(combined)
+
+    selected_tab = tab if tab in ("yours", "friends", "crew", "full") else "yours"
 
     ring_offsets: dict[str, str] = {}
     for p in predictions:
@@ -96,6 +120,9 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
     day_dates = {b["day"]: b.get("trial_date") for b in day_blocks if not b.get("is_lunch_break")}
     day_blocks_view = [b for b in day_blocks if b["day"] == selected_day]
 
+    from app.crew import build_crew_grid
+    crew_grid = build_crew_grid(day_blocks, predictions, friend_groups, selected_day)
+
     return templates.TemplateResponse(
         request, "schedule.html",
         {
@@ -107,6 +134,7 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
             "available_days": available_days,
             "selected_day": selected_day,
             "day_dates": day_dates,
+            "selected_tab": selected_tab,
             "multi_day": len(available_days) > 1,
             "trial_start_str": format_predicted_time(
                 datetime.combine(trial.start_date or date.today(), trial_start)
@@ -116,6 +144,14 @@ def schedule_view(uuid: str, trial_id: int, request: Request, db: DBSession = De
             "live_synced_at": trial.live_synced_at,
             "ring_offsets": ring_offsets,
             "any_running": any_running,
+            "friend_groups": friend_groups,
+            "friend_data": data_state,
+            "friend_data_str": format_scraped_at(data_state.get("scraped_at")),
+            "refreshing_friends": request.query_params.get("refreshing_friends") == "1",
+            "friend_error": request.query_params.get("friend_error"),
+            "friend_query": "",
+            "friend_matches": [],
+            "crew_grid": crew_grid,
         },
     )
 
@@ -577,6 +613,153 @@ def _compute_catalogue_blocks(
     return out
 
 
+def build_catalogue_index(trial_id: int, db: DBSession) -> dict[tuple[str, str], list[CatalogueEntry]]:
+    cat_by_key: dict[tuple[str, str], list[CatalogueEntry]] = defaultdict(list)
+    for c in db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial_id).all():
+        cat_by_key[(_strip_event_code(c.event_name), c.cat_number)].append(c)
+    return cat_by_key
+
+
+def fan_out_catalogue_entries(
+    ce: CatalogueEntry,
+    cat_by_key: dict[tuple[str, str], list[CatalogueEntry]],
+) -> list[CatalogueEntry]:
+    return sorted(
+        cat_by_key.get((_strip_event_code(ce.event_name), ce.cat_number), [ce]),
+        key=lambda c: (getattr(c, "day", 1) or 1, c.run_position or 0),
+    )
+
+
+def predict_catalogue_entry(
+    *,
+    ce: CatalogueEntry,
+    session: Session,
+    trial: Trial,
+    all_class_schedules: list[ClassSchedule],
+    block_starts: dict[tuple[str, int, int], datetime],
+    entry_id: int,
+    dog_name: str | None = None,
+    ring_number: str | None = None,
+    position_override: int | None = None,
+    time_per_dog_override: int | None = None,
+    is_friend: bool = False,
+    handler_name: str | None = None,
+    friend_id: int | None = None,
+    event_timings: dict | None = None,
+    paper_block_starts: dict[tuple[str, int, int], datetime] | None = None,
+    live_enabled: bool = False,
+) -> dict:
+    ce_day = getattr(ce, "day", 1) or 1
+    cs = _match_class_schedule(all_class_schedules, ce.event_name, ce_day)
+    day_date = (trial.start_date + timedelta(days=ce_day - 1)) if trial.start_date else None
+    height_tpd = session.tpd_for(ce.height_group, ce.event_name)
+    raw_ring = ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None)
+    bare_ring = _bare_ring(raw_ring)
+
+    timing = (
+        event_timings.get((ce_day, bare_ring, ce.event_name, ce.height_group))
+        if live_enabled and event_timings and bare_ring
+        else None
+    )
+
+    prediction_source = "scheduled"
+    event_started_at = None
+    ring_offset_str = None
+    live_finished = False
+    pred: dict = {}
+    predicted_start = None
+    predicted_start_str = None
+
+    if timing and timing.started_at and not timing.finished_at:
+        pred = predict_run_from_event(
+            event_started_at=timing.started_at,
+            run_position=ce.run_position,
+            avg_time_per_dog=height_tpd,
+            position_override=position_override,
+            time_per_dog_override=time_per_dog_override,
+        )
+        predicted_start = pred["predicted_start"]
+        predicted_start_str = format_predicted_time(predicted_start)
+        prediction_source = "event_live"
+        event_started_at = timing.started_at
+        if paper_block_starts:
+            ring_offset_str = _format_ring_offset(
+                paper_block_starts.get((ce.event_name, ce.height_group, ce_day)),
+                timing.started_at,
+            )
+    elif timing and timing.finished_at:
+        if timing.started_at:
+            pred = predict_run_from_event(
+                event_started_at=timing.started_at,
+                run_position=ce.run_position,
+                avg_time_per_dog=height_tpd,
+                position_override=position_override,
+                time_per_dog_override=time_per_dog_override,
+            )
+            predicted_start = pred["predicted_start"]
+            predicted_start_str = format_predicted_time(predicted_start)
+            event_started_at = timing.started_at
+        prediction_source = "event_live"
+        live_finished = True
+    elif cs and cs.scheduled_start:
+        pred = predict_run(
+            scheduled_start=cs.scheduled_start,
+            ring_setup_mins=cs.ring_setup_mins or session.default_setup_mins,
+            walk_mins=cs.walk_mins or session.default_walk_mins,
+            run_position=ce.run_position,
+            avg_time_per_dog=height_tpd,
+            trial_date=day_date,
+            position_override=position_override,
+            time_per_dog_override=time_per_dog_override,
+        )
+        predicted_start = pred["predicted_start"]
+        predicted_start_str = format_predicted_time(predicted_start)
+    elif (ce.event_name, ce.height_group, ce_day) in block_starts:
+        pred = predict_run_from_block(
+            block_first_run=block_starts[(ce.event_name, ce.height_group, ce_day)],
+            run_position=ce.run_position,
+            avg_time_per_dog=height_tpd,
+            position_override=position_override,
+            time_per_dog_override=time_per_dog_override,
+        )
+        predicted_start = pred["predicted_start"]
+        predicted_start_str = format_predicted_time(predicted_start)
+
+    card_id = f"friend-{friend_id}-{ce.id}" if is_friend and friend_id else f"{entry_id}-{ce.id}"
+    return {
+        "entry_id": entry_id,
+        "card_id": card_id,
+        "dog_name": dog_name or ce.dog_name,
+        "handler_name": handler_name or ce.handler_name,
+        "event_name": ce.event_name,
+        "height_group": ce.height_group,
+        "cat_number": ce.cat_number,
+        "catalogue_entry_id": ce.id,
+        "ring_number": raw_ring,
+        "ring_label": _ring_label(raw_ring),
+        "day": ce_day,
+        "run_position": ce.run_position,
+        "height_group_total": ce.height_group_total,
+        "nfc": ce.nfc,
+        "predicted_start": predicted_start,
+        "predicted_start_str": predicted_start_str,
+        "effective_position": pred.get("effective_position", ce.run_position),
+        "effective_tpd": pred.get("effective_tpd", height_tpd),
+        "pending": False,
+        "position_override": position_override,
+        "time_per_dog_override": time_per_dog_override,
+        "conflict": False,
+        "conflict_with_yours": False,
+        "conflicts_with": [],
+        "is_friend": is_friend,
+        "friend_id": friend_id,
+        "prediction_source": prediction_source,
+        "event_started_at": event_started_at,
+        "ring_offset_str": ring_offset_str,
+        "live_finished": live_finished,
+    }
+
+
 def _build_predictions(
     session: Session,
     trial: Trial,
@@ -637,133 +820,7 @@ def _build_predictions(
     all_class_schedules = (
         db.query(ClassSchedule).filter(ClassSchedule.trial_id == trial.id).all()
     )
-
-    # Index every catalogue entry by (stripped event_name, cat_number) so a
-    # single SessionEntry can fan out to every run of the class it covers. A
-    # logical class may span several days (same name, different day) and/or be
-    # split into separately-coded runs/rounds (e.g. ADM1/ADM2, ADO1/2/3) that
-    # share a calendar day. The /entries page lists each run once under the
-    # bare class name, but the SessionEntry dedup collapses them; stripping the
-    # "(CODE)" suffix here regroups all of a dog's runs of the class. cat_number
-    # is unique to one dog within a trial, so this never merges across dogs.
-    from collections import defaultdict
-    cat_by_key: dict[tuple[str, str], list[CatalogueEntry]] = defaultdict(list)
-    for c in db.query(CatalogueEntry).filter(CatalogueEntry.trial_id == trial.id).all():
-        cat_by_key[(_strip_event_code(c.event_name), c.cat_number)].append(c)
-
-    def _predict_for_ce(entry: SessionEntry, ce: CatalogueEntry) -> dict:
-        ce_day = getattr(ce, "day", 1) or 1
-        cs = _match_class_schedule(all_class_schedules, ce.event_name, ce_day)
-
-        # Anchor each day's prediction on its own calendar date so multi-day
-        # rows sort correctly and don't false-conflict across days.
-        day_date = (trial.start_date + timedelta(days=ce_day - 1)) if trial.start_date else None
-
-        height_tpd = session.tpd_for(ce.height_group, ce.event_name)
-        raw_ring = entry.ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None)
-        bare_ring = _bare_ring(raw_ring)
-
-        timing = (
-            event_timings.get((ce_day, bare_ring, ce.event_name, ce.height_group))
-            if live_enabled and event_timings and bare_ring
-            else None
-        )
-
-        prediction_source = "scheduled"
-        event_started_at = None
-        ring_offset_str = None
-        live_finished = False
-        pred: dict = {}
-
-        if timing and timing.started_at and not timing.finished_at:
-            pred = predict_run_from_event(
-                event_started_at=timing.started_at,
-                run_position=ce.run_position,
-                avg_time_per_dog=height_tpd,
-                position_override=entry.position_override,
-                time_per_dog_override=entry.time_per_dog_override,
-            )
-            predicted_start = pred["predicted_start"]
-            predicted_start_str = format_predicted_time(predicted_start)
-            prediction_source = "event_live"
-            event_started_at = timing.started_at
-            ring_offset_str = _format_ring_offset(
-                paper_block_starts.get((ce.event_name, ce.height_group, ce_day)),
-                timing.started_at,
-            )
-        elif timing and timing.finished_at:
-            if timing.started_at:
-                pred = predict_run_from_event(
-                    event_started_at=timing.started_at,
-                    run_position=ce.run_position,
-                    avg_time_per_dog=height_tpd,
-                    position_override=entry.position_override,
-                    time_per_dog_override=entry.time_per_dog_override,
-                )
-                predicted_start = pred["predicted_start"]
-                predicted_start_str = format_predicted_time(predicted_start)
-                event_started_at = timing.started_at
-            else:
-                pred = {}
-                predicted_start = None
-                predicted_start_str = None
-            prediction_source = "event_live"
-            live_finished = True
-        elif cs and cs.scheduled_start:
-            pred = predict_run(
-                scheduled_start=cs.scheduled_start,
-                ring_setup_mins=cs.ring_setup_mins or session.default_setup_mins,
-                walk_mins=cs.walk_mins or session.default_walk_mins,
-                run_position=ce.run_position,
-                avg_time_per_dog=height_tpd,
-                trial_date=day_date,
-                position_override=entry.position_override,
-                time_per_dog_override=entry.time_per_dog_override,
-            )
-            predicted_start = pred["predicted_start"]
-            predicted_start_str = format_predicted_time(predicted_start)
-        elif (ce.event_name, ce.height_group, ce_day) in block_starts:
-            pred = predict_run_from_block(
-                block_first_run=block_starts[(ce.event_name, ce.height_group, ce_day)],
-                run_position=ce.run_position,
-                avg_time_per_dog=height_tpd,
-                position_override=entry.position_override,
-                time_per_dog_override=entry.time_per_dog_override,
-            )
-            predicted_start = pred["predicted_start"]
-            predicted_start_str = format_predicted_time(predicted_start)
-        else:
-            pred = {}
-            predicted_start = None
-            predicted_start_str = None
-
-        return {
-            "entry_id": entry.id,
-            "card_id": f"{entry.id}-{ce.id}",
-            "dog_name": entry.dog_name,
-            "event_name": ce.event_name,
-            "height_group": ce.height_group,
-            "cat_number": ce.cat_number,
-            "catalogue_entry_id": ce.id,
-            "ring_number": raw_ring,
-            "ring_label": _ring_label(raw_ring),
-            "day": ce_day,
-            "run_position": ce.run_position,
-            "height_group_total": ce.height_group_total,
-            "nfc": ce.nfc,
-            "predicted_start": predicted_start,
-            "predicted_start_str": predicted_start_str,
-            "effective_position": pred.get("effective_position", ce.run_position),
-            "effective_tpd": pred.get("effective_tpd", height_tpd),
-            "pending": False,
-            "position_override": entry.position_override,
-            "time_per_dog_override": entry.time_per_dog_override,
-            "conflict": False,
-            "prediction_source": prediction_source,
-            "event_started_at": event_started_at,
-            "ring_offset_str": ring_offset_str,
-            "live_finished": live_finished,
-        }
+    cat_by_key = build_catalogue_index(trial.id, db)
 
     predictions = []
     for entry in entries:
@@ -791,6 +848,9 @@ def _build_predictions(
                 "position_override": entry.position_override,
                 "time_per_dog_override": entry.time_per_dog_override,
                 "conflict": False,
+                "conflict_with_yours": False,
+                "conflicts_with": [],
+                "is_friend": False,
                 "prediction_source": "scheduled",
                 "event_started_at": None,
                 "ring_offset_str": None,
@@ -798,15 +858,22 @@ def _build_predictions(
             })
             continue
 
-        # Fan out to every run this dog has of this class (one card per run,
-        # across days and/or coded rounds). Sort by day then run_position so
-        # same-day rounds keep their running order.
-        day_entries = sorted(
-            cat_by_key.get((_strip_event_code(ce.event_name), ce.cat_number), [ce]),
-            key=lambda c: (getattr(c, "day", 1) or 1, c.run_position or 0),
-        )
-        for sib in day_entries:
-            predictions.append(_predict_for_ce(entry, sib))
+        for sib in fan_out_catalogue_entries(ce, cat_by_key):
+            predictions.append(predict_catalogue_entry(
+                ce=sib,
+                session=session,
+                trial=trial,
+                all_class_schedules=all_class_schedules,
+                block_starts=block_starts,
+                entry_id=entry.id,
+                dog_name=entry.dog_name,
+                ring_number=entry.ring_number,
+                position_override=entry.position_override,
+                time_per_dog_override=entry.time_per_dog_override,
+                event_timings=event_timings if live_enabled else None,
+                paper_block_starts=paper_block_starts if live_enabled else None,
+                live_enabled=live_enabled,
+            ))
 
     predictions.sort(key=lambda p: (p["predicted_start"] is None, p["predicted_start"] or ""))
     return predictions
@@ -841,6 +908,93 @@ def _match_class_schedule(
         if hit:
             return hit
     return _match_in([cs for cs in schedules if cs.day is None])
+
+
+@router.post("/s/{uuid}/trials/{trial_id}/friends")
+def add_friend_route(
+    uuid: str,
+    trial_id: int,
+    request: Request,
+    query: str = Form(default=""),
+    handler_name: str = Form(default=""),
+    db: DBSession = Depends(get_db),
+):
+    session = _get_session(uuid, db)
+    trial = _get_trial(trial_id, db)
+    from app.friends import add_friend, search_handlers, friend_data_state, format_scraped_at
+
+    friend, err = add_friend(
+        session_uuid=uuid,
+        trial_id=trial_id,
+        query=query,
+        handler_name=handler_name.strip() or None,
+        db=db,
+    )
+    if err == "ambiguous":
+        matches = search_handlers(trial_id, query, db)
+        data_state = friend_data_state(trial, db)
+        return templates.TemplateResponse(
+            request, "schedule.html",
+            {
+                "session": session,
+                "uuid": uuid,
+                "trial": trial,
+                "predictions": _build_predictions(session, trial, db),
+                "day_blocks": [],
+                "available_days": [],
+                "selected_day": 1,
+                "day_dates": {},
+                "multi_day": False,
+                "trial_start_str": None,
+                "has_class_schedules": False,
+                "selected_tab": "friends",
+                "friend_groups": [],
+                "friend_data": data_state,
+                "friend_data_str": format_scraped_at(data_state.get("scraped_at")),
+                "refreshing_friends": False,
+                "friend_query": query,
+                "friend_matches": matches,
+                "friend_error": None,
+                "crew_grid": {"rings": [], "rows": [], "crew_legend": []},
+            },
+        )
+    redirect_url = f"/s/{uuid}/trials/{trial_id}/schedule?tab=friends"
+    if err:
+        from urllib.parse import quote
+        redirect_url += f"&friend_error={quote(err)}"
+    return RedirectResponse(url=redirect_url, status_code=303)
+
+
+@router.post("/s/{uuid}/trials/{trial_id}/friends/{friend_id}/delete")
+def delete_friend_route(uuid: str, trial_id: int, friend_id: int, db: DBSession = Depends(get_db)):
+    _get_session(uuid, db)
+    from app.friends import remove_friend
+    remove_friend(friend_id, uuid, trial_id, db)
+    return RedirectResponse(
+        url=f"/s/{uuid}/trials/{trial_id}/schedule?tab=friends",
+        status_code=303,
+    )
+
+
+@router.post("/s/{uuid}/trials/{trial_id}/friends/refresh")
+def refresh_friends_data(uuid: str, trial_id: int, db: DBSession = Depends(get_db)):
+    session = _get_session(uuid, db)
+    trial = _get_trial(trial_id, db)
+    try:
+        from app.queue import get_queue
+        from app.routers.trials import CATALOGUE_JOB_TIMEOUT
+        get_queue().enqueue(
+            "app.worker.collect_friend_data_job",
+            trial.id,
+            session.uuid,
+            job_timeout=CATALOGUE_JOB_TIMEOUT,
+        )
+    except Exception:
+        pass
+    return RedirectResponse(
+        url=f"/s/{uuid}/trials/{trial_id}/schedule?tab=friends&refreshing_friends=1",
+        status_code=303,
+    )
 
 
 def _get_session(uuid: str, db: DBSession) -> Session:
