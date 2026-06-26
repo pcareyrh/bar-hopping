@@ -137,7 +137,11 @@ def schedule_view(
 
     available_days = sorted({b["day"] for b in day_blocks})
     selected_day = day if day in available_days else (available_days[0] if available_days else 1)
-    day_dates = {b["day"]: b.get("trial_date") for b in day_blocks if not b.get("is_lunch_break")}
+    friend_days = {p["day"] for g in friend_groups for p in g["predictions"] if p.get("day")}
+    friend_data_days = set(data_state.get("available_days", [])) | set(data_state.get("pending_days", []))
+    all_day_nums = sorted(set(available_days) | friend_days | friend_data_days)
+    base_date = trial.start_date or date.today()
+    day_dates = {d: base_date + timedelta(days=d - 1) for d in all_day_nums}
     day_blocks_view = [b for b in day_blocks if b["day"] == selected_day]
 
     from app.crew import build_crew_grid

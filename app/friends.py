@@ -326,7 +326,13 @@ def build_friend_predictions(
                 )
                 friend_preds.append(pred)
 
-        friend_preds.sort(key=lambda p: (p["predicted_start"] is None, p["predicted_start"] or ""))
+        friend_preds.sort(
+            key=lambda p: (
+                p.get("day") or 0,
+                p["predicted_start"] is None,
+                p["predicted_start"] or datetime.min,
+            )
+        )
         groups.append({
             "friend": friend,
             "predictions": friend_preds,

@@ -254,6 +254,54 @@ def test_multi_day_friend_fanout(db):
     groups = build_friend_predictions(sess, trial, db)
     days = sorted({p["day"] for p in groups[0]["predictions"]})
     assert days == [2, 3]
+    ordered_days = [p["day"] for p in groups[0]["predictions"]]
+    assert ordered_days == [2, 3]
+
+
+def test_multi_day_friend_sorts_by_day_before_time(db):
+    """Without trial.start_date, ClassSchedule times share today's date — sort by day first."""
+    sess = Session(uuid="u1")
+    trial = Trial(external_id="md2", name="Nationals")
+    db.add_all([sess, trial])
+    db.flush()
+    db.add_all([
+        _cat(trial, day=2, event_name="Masters Agility", cat_number="410",
+             dog_name="Fika", handler_name="Jane Smith", run_position=1),
+        _cat(trial, day=3, event_name="Masters Agility", cat_number="410",
+             dog_name="Fika", handler_name="Jane Smith", run_position=1),
+        ClassSchedule(
+            trial_id=trial.id, day=2, ring_number="1",
+            class_name="Masters Agility", scheduled_start=time(17, 0),
+        ),
+        ClassSchedule(
+            trial_id=trial.id, day=3, ring_number="1",
+            class_name="Masters Agility", scheduled_start=time(9, 0),
+        ),
+    ])
+    db.commit()
+    add_friend(session_uuid=sess.uuid, trial_id=trial.id, query="Jane", db=db)
+    groups = build_friend_predictions(sess, trial, db)
+    ordered_days = [p["day"] for p in groups[0]["predictions"]]
+    assert ordered_days == [2, 3]
+
+
+def test_schedule_friends_tab_shows_day_dates(client, client_db):
+    sess = Session(uuid="u2")
+    trial = Trial(external_id="md3", name="Nationals", start_date=date(2026, 6, 23))
+    client_db.add_all([sess, trial])
+    client_db.flush()
+    client_db.add_all([
+        _cat(trial, day=2, event_name="Masters Agility", cat_number="410",
+             dog_name="Fika", handler_name="Jane Smith", run_position=1),
+        _cat(trial, day=3, event_name="Masters Jumping", cat_number="410",
+             dog_name="Fika", handler_name="Jane Smith", run_position=1),
+    ])
+    client_db.commit()
+    add_friend(session_uuid=sess.uuid, trial_id=trial.id, query="Jane Smith", db=client_db)
+    resp = client.get(f"/s/{sess.uuid}/trials/{trial.id}/schedule?tab=friends")
+    assert resp.status_code == 200
+    assert "Day 2 — 24 Jun" in resp.text
+    assert "Day 3 — 25 Jun" in resp.text
 
 
 def test_friend_data_state_partial(db):
