@@ -84,8 +84,28 @@ def schedule_view(
         SessionFriend.session_uuid == uuid,
         SessionFriend.trial_id == trial_id,
     ).first() is not None
+    paper_block_starts: dict[tuple[str, int, int], datetime] | None = None
+    if live_enabled and event_timings:
+        paper_blocks = _compute_catalogue_blocks(
+            trial, db,
+            base_start=trial_start,
+            setup_mins=session.default_setup_mins,
+            walk_mins=session.default_walk_mins,
+            tpd_for_height=session.tpd_for,
+            lunch_breaks=lunch_breaks,
+        )
+        paper_block_starts = {
+            (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"]
+            for b in paper_blocks
+        }
+
     friend_groups = build_friend_predictions(
-        session, trial, db, day_blocks=day_blocks, lunch_breaks=lunch_breaks,
+        session, trial, db,
+        day_blocks=day_blocks,
+        lunch_breaks=lunch_breaks,
+        event_timings=event_timings if live_enabled else None,
+        paper_block_starts=paper_block_starts,
+        live_enabled=live_enabled,
     ) if has_friends else []
 
     combined = list(predictions) + [p for g in friend_groups for p in g["predictions"]]
@@ -253,6 +273,27 @@ def _event_timings_for_trial(trial: Trial, db: DBSession) -> dict:
     """Map (day, ring_number, event_name, height_group) → EventLiveTiming row."""
     rows = db.query(EventLiveTiming).filter(EventLiveTiming.trial_id == trial.id).all()
     return {(r.day, r.ring_number, r.event_name, r.height_group): r for r in rows}
+
+
+def _find_event_timing(
+    event_timings: dict | None,
+    day: int,
+    bare_ring: str | None,
+    event_name: str,
+    height_group: int,
+) -> EventLiveTiming | None:
+    """Look up live timing, matching bare live names to coded catalogue names."""
+    if not event_timings:
+        return None
+    bare_event = _strip_event_code(event_name)
+    if bare_ring:
+        hit = event_timings.get((day, bare_ring, bare_event, height_group))
+        if hit:
+            return hit
+    for (d, _ring, evt, hg), timing in event_timings.items():
+        if d == day and hg == height_group and _strip_event_code(evt) == bare_event:
+            return timing
+    return None
 
 
 def _duration_stats_for_trial(trial: Trial, db: DBSession) -> dict:
@@ -521,8 +562,10 @@ def _compute_catalogue_blocks(
             )
             for b in blocks:
                 timing = (
-                    event_timings.get((day_num, bare_ring, b["event_name"], b["height_group"]))
-                    if event_timings and bare_ring
+                    _find_event_timing(
+                        event_timings, day_num, bare_ring, b["event_name"], b["height_group"],
+                    )
+                    if event_timings
                     else None
                 )
                 tpd = tpd_for_height(b["height_group"], b["event_name"])
@@ -657,8 +700,8 @@ def predict_catalogue_entry(
     bare_ring = _bare_ring(raw_ring)
 
     timing = (
-        event_timings.get((ce_day, bare_ring, ce.event_name, ce.height_group))
-        if live_enabled and event_timings and bare_ring
+        _find_event_timing(event_timings, ce_day, bare_ring, ce.event_name, ce.height_group)
+        if live_enabled and event_timings
         else None
     )
 

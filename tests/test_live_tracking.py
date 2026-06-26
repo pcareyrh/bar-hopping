@@ -5,7 +5,12 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.live_tracking import apply_ring_snapshots
+from app.live_tracking import (
+    _to_naive_aest,
+    apply_ring_snapshots,
+    deserialize_ring_snapshots,
+    serialize_ring_snapshots,
+)
 from app.models import Base, Trial, EventLiveTiming, EventDurationStat
 
 
@@ -41,7 +46,7 @@ class TestApplyRingSnapshots:
         db.commit()
 
         row = db.query(EventLiveTiming).one()
-        assert row.started_at == datetime(2026, 6, 25, 8, 0)
+        assert row.started_at == datetime(2026, 6, 25, 18, 0)
         assert row.start_confidence == "low"
         assert row.finished_at is None
         assert prev["351"]["event_name"] == "Novice Agility"
@@ -63,7 +68,7 @@ class TestApplyRingSnapshots:
         db.commit()
 
         row = db.query(EventLiveTiming).one()
-        assert row.finished_at == datetime(2026, 6, 25, 8, 45)
+        assert row.finished_at == datetime(2026, 6, 25, 18, 45)
         assert row.duration_s == 45 * 60
 
         stat = db.query(EventDurationStat).one()
@@ -88,7 +93,63 @@ class TestApplyRingSnapshots:
         rows = db.query(EventLiveTiming).order_by(EventLiveTiming.id).all()
         assert len(rows) == 2
         assert rows[0].event_name == "Novice Agility"
-        assert rows[0].finished_at == datetime(2026, 6, 25, 10, 0)
+        assert rows[0].finished_at == datetime(2026, 6, 25, 20, 0)
         assert rows[1].event_name == "Novice Jumping"
-        assert rows[1].started_at == datetime(2026, 6, 25, 10, 0)
+        assert rows[1].started_at == datetime(2026, 6, 25, 20, 0)
         assert rows[1].start_confidence == "high"
+
+
+class TestLiveTrackingHelpers:
+    def test_running_does_not_reset_existing_started_at_when_prev_missing(self, db):
+        trial = Trial(external_id="1307", name="Test")
+        db.add(trial)
+        db.commit()
+
+        existing_start = datetime(2026, 6, 25, 17, 30)
+        row = EventLiveTiming(
+            trial_id=trial.id,
+            day=1,
+            ring_id="351",
+            ring_number="1",
+            event_name="Novice Agility",
+            height_group=400,
+            status="Running",
+            started_at=existing_start,
+            start_confidence="high",
+            pause_s=0,
+        )
+        db.add(row)
+        db.commit()
+
+        t0 = datetime(2026, 6, 25, 8, 0, tzinfo=timezone.utc)
+        ring = _ring("351", "1", "Novice Agility", 400, "Running", t0)
+        apply_ring_snapshots(db, trial.id, 1, {}, [ring], t0)
+        db.commit()
+
+        row = db.query(EventLiveTiming).one()
+        assert row.started_at == existing_start
+
+    def test_to_naive_aest_converts_utc_to_aest(self):
+        utc = datetime(2026, 6, 25, 8, 0, tzinfo=timezone.utc)
+        assert _to_naive_aest(utc) == datetime(2026, 6, 25, 18, 0)
+
+    def test_serialize_deserialize_ring_snapshots_roundtrip(self):
+        updated = datetime(2026, 6, 25, 18, 0)
+        pause_started = datetime(2026, 6, 25, 18, 30)
+        snapshots = {
+            "351": {
+                "ring_id": "351",
+                "ring_number": "1",
+                "event_name": "Novice Agility",
+                "status": "Running",
+                "updated": updated
+            }
+        }
+        snapshots["351"]["pause_started_at"] = pause_started
+
+        raw = serialize_ring_snapshots(snapshots)
+        restored = deserialize_ring_snapshots(raw)
+
+        assert restored["351"]["updated"] == updated
+        assert restored["351"]["pause_started_at"] == pause_started
+        assert restored["351"]["event_name"] == "Novice Agility"

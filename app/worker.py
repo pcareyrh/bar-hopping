@@ -1,10 +1,11 @@
 """RQ job functions executed inside the worker container."""
 import asyncio
-import json
 import logging
 import os
 import re as _re
 from datetime import date, datetime, timedelta
+
+from sqlalchemy import func
 
 from app.database import SessionLocal
 from app.models import Session, Trial, SessionEntry, CatalogueEntry, ClassSchedule
@@ -524,7 +525,7 @@ def upload_catalogue_job(trial_id: int, data: bytes, content_type: str) -> None:
         db.close()
 
 
-def _live_trial_day(trial: Trial) -> int:
+def _live_trial_day(trial: Trial, db=None) -> int:
     """Return catalogue day number: 1 by default, or today relative to start_date for multi-day trials."""
     day = 1
     if (
@@ -535,6 +536,18 @@ def _live_trial_day(trial: Trial) -> int:
         day = (date.today() - trial.start_date).days + 1
         if day < 1:
             day = 1
+        max_day = (trial.end_date - trial.start_date).days + 1
+        day = min(day, max_day)
+
+    if db is not None:
+        max_cat_day = (
+            db.query(func.max(CatalogueEntry.day))
+            .filter(CatalogueEntry.trial_id == trial.id)
+            .scalar()
+        )
+        if max_cat_day:
+            day = min(day, max_cat_day)
+
     return day
 
 
@@ -543,11 +556,15 @@ def _live_ring_snapshots_key(trial_id: int) -> str:
 
 
 def _load_live_ring_snapshots(trial_id: int) -> dict:
+    from app.live_tracking import deserialize_ring_snapshots
+
     try:
         raw = get_redis().get(_live_ring_snapshots_key(trial_id))
         if not raw:
             return {}
-        return json.loads(raw)
+        if isinstance(raw, bytes):
+            raw = raw.decode()
+        return deserialize_ring_snapshots(raw)
     except Exception as e:
         log.warning(
             "poll_live_trial_job: failed to load ring snapshots for trial %d: %s",
@@ -558,8 +575,10 @@ def _load_live_ring_snapshots(trial_id: int) -> dict:
 
 
 def _store_live_ring_snapshots(trial_id: int, snapshots: dict) -> None:
+    from app.live_tracking import serialize_ring_snapshots
+
     try:
-        get_redis().set(_live_ring_snapshots_key(trial_id), json.dumps(snapshots))
+        get_redis().set(_live_ring_snapshots_key(trial_id), serialize_ring_snapshots(snapshots))
     except Exception as e:
         log.warning(
             "poll_live_trial_job: failed to store ring snapshots for trial %d: %s",
@@ -572,11 +591,36 @@ def _derive_live_status(rings: list[dict]) -> str:
     if not rings:
         return "done"
     statuses = [r.get("status") for r in rings]
-    if any(s in ("Running", "Height Change") for s in statuses):
+    if any(s in ("Running", "Height Change", "Not Running") for s in statuses):
         return "live"
     if all(s == "Complete" for s in statuses):
         return "done"
     return "idle"
+
+
+def _enqueue_live_poll(trial_id: int, *, delay_seconds: int = 0) -> None:
+    """Enqueue a live poll job, deduplicating via a stable job_id per trial."""
+    from rq.exceptions import DuplicateJobError
+
+    queue = get_queue()
+    job_id = f"live_poll:{trial_id}"
+    kwargs = {"job_timeout": LIVE_POLL_JOB_TIMEOUT, "job_id": job_id}
+    try:
+        if delay_seconds:
+            queue.enqueue_in(
+                timedelta(seconds=delay_seconds),
+                "app.worker.poll_live_trial_job",
+                trial_id,
+                **kwargs,
+            )
+        else:
+            queue.enqueue(
+                "app.worker.poll_live_trial_job",
+                trial_id,
+                **kwargs,
+            )
+    except DuplicateJobError:
+        log.debug("live poll job %s already queued for trial %d", job_id, trial_id)
 
 
 def poll_live_trial_job(trial_id: int) -> None:
@@ -598,11 +642,9 @@ def poll_live_trial_job(trial_id: int) -> None:
             observed_at = payload.get("observed_at") or datetime.utcnow()
 
             prev = _load_live_ring_snapshots(trial_id)
-            day = _live_trial_day(trial)
-            apply_ring_snapshots(db, trial_id, day, prev, rings, observed_at)
-
-            new_prev = {str(r["ring_id"]): r for r in rings if r.get("ring_id") is not None}
-            _store_live_ring_snapshots(trial_id, new_prev)
+            day = _live_trial_day(trial, db)
+            next_prev = apply_ring_snapshots(db, trial_id, day, prev, rings, observed_at)
+            _store_live_ring_snapshots(trial_id, next_prev)
 
             trial.live_synced_at = datetime.utcnow()
             trial.live_status = _derive_live_status(rings)
@@ -616,12 +658,7 @@ def poll_live_trial_job(trial_id: int) -> None:
             )
 
             if trial.live_status == "live":
-                get_queue().enqueue_in(
-                    timedelta(seconds=LIVE_POLL_INTERVAL),
-                    "app.worker.poll_live_trial_job",
-                    trial_id,
-                    job_timeout=LIVE_POLL_JOB_TIMEOUT,
-                )
+                _enqueue_live_poll(trial_id, delay_seconds=LIVE_POLL_INTERVAL)
         finally:
             db.close()
 
@@ -631,11 +668,7 @@ def poll_live_trial_job(trial_id: int) -> None:
 def start_live_tracking_job(trial_id: int) -> None:
     """Kick off (or refresh) live ring polling for a trial."""
     log.info("start_live_tracking_job: enqueuing poll for trial %d", trial_id)
-    get_queue().enqueue(
-        "app.worker.poll_live_trial_job",
-        trial_id,
-        job_timeout=LIVE_POLL_JOB_TIMEOUT,
-    )
+    _enqueue_live_poll(trial_id)
 
 
 def sweep_live_trials_job() -> None:
