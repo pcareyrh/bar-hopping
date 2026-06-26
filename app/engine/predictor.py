@@ -26,6 +26,26 @@ def predict_run_from_block(
     }
 
 
+def predict_run_from_event(
+    *,
+    event_started_at: datetime,
+    run_position: int,
+    avg_time_per_dog: int,
+    position_override: Optional[int] = None,
+    time_per_dog_override: Optional[int] = None,
+) -> dict:
+    """Like predict_run_from_block but anchor is measured event start."""
+    effective_position = position_override if position_override is not None else run_position
+    effective_tpd = time_per_dog_override if time_per_dog_override is not None else avg_time_per_dog
+    predicted_start = event_started_at + timedelta(seconds=(effective_position - 1) * effective_tpd)
+    return {
+        "first_run_start": event_started_at,
+        "predicted_start": predicted_start,
+        "effective_position": effective_position,
+        "effective_tpd": effective_tpd,
+    }
+
+
 def predict_run(
     *,
     scheduled_start: time,

@@ -11,6 +11,19 @@
 <p class="text-sm text-gray-500 mb-4">{{ trial.start_date.strftime("%-d %B %Y") }}</p>
 {% endif %}
 
+{% if (trial.live_status|default('idle')) == 'live' %}
+<div class="flex items-center gap-2 flex-wrap mb-4 px-3 py-2 rounded-lg bg-green-50 border border-green-200 text-sm">
+  <span class="relative flex h-2.5 w-2.5 shrink-0">
+    <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+    <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+  </span>
+  <span class="font-medium text-green-800">Live tracking active</span>
+  {% if trial.live_synced_at %}
+  <span class="text-green-600 text-xs">Updated {{ trial.live_synced_at.strftime("%H:%M") }}</span>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="overflow-x-auto -mx-4 px-4 mb-4">
 <nav class="flex flex-nowrap gap-1 rounded-xl bg-gray-100 p-1 min-w-max" role="tablist" aria-label="Schedule views">
   <a href="?tab=yours{% if selected_day and selected_tab in ('full', 'crew') %}&day={{ selected_day }}{% endif %}"
@@ -51,17 +64,27 @@
 {% else %}
 
 {% set pred_days = predictions | map(attribute='day') | reject('none') | unique | list %}
-<div class="space-y-3">
-  {% set ns = namespace(prev_day=0) %}
-  {% for p in predictions %}
-  {% if pred_days | length > 1 and p.day and p.day != ns.prev_day %}
-  <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-2 {% if not loop.first %}mt-2{% endif %}">Day {{ p.day }}</p>
-  {% set ns.prev_day = p.day %}
+<div
+  id="schedule-predictions"
+  {% if (trial.live_status|default('idle')) == 'live' %}
+  hx-get="/s/{{ uuid }}/trials/{{ trial.id }}/schedule"
+  hx-trigger="every 30s"
+  hx-select="#schedule-predictions"
+  hx-swap="outerHTML"
   {% endif %}
-  {% with p=p %}
-  {% include "partials/run_card.html" %}
-  {% endwith %}
-  {% endfor %}
+>
+  <div class="space-y-3">
+    {% set ns = namespace(prev_day=0) %}
+    {% for p in predictions %}
+    {% if pred_days | length > 1 and p.day and p.day != ns.prev_day %}
+    <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-2 {% if not loop.first %}mt-2{% endif %}">Day {{ p.day }}</p>
+    {% set ns.prev_day = p.day %}
+    {% endif %}
+    {% with p=p %}
+    {% include "partials/run_card.html" %}
+    {% endwith %}
+    {% endfor %}
+  </div>
 </div>
 
 {% endif %}
@@ -298,6 +321,13 @@
     <a href="?tab=full&day={{ d }}" class="px-3 py-1.5 rounded-full text-xs font-semibold transition {% if d == selected_day %}bg-brand text-white{% else %}bg-gray-100 text-gray-500 hover:bg-gray-200{% endif %}">
       Day {{ d }}{% if day_dates[d] %} — {{ day_dates[d].strftime("%-d %b") }}{% endif %}
     </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if ring_offsets %}
+  <div class="flex gap-2 mb-3 flex-wrap">
+    {% for ring_label, offset in ring_offsets.items() %}
+    <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-600">{{ ring_label }} · {{ offset }}</span>
     {% endfor %}
   </div>
   {% endif %}

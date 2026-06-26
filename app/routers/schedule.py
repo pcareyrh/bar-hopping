@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import date, datetime, time, timedelta
 
@@ -9,10 +10,20 @@ from sqlalchemy.orm import Session as DBSession
 from collections import defaultdict
 
 from app.database import get_db
-from app.models import Session, Trial, SessionEntry, CatalogueEntry, ClassSchedule, TrialLunchBreak
+from app.models import (
+    Session,
+    Trial,
+    SessionEntry,
+    CatalogueEntry,
+    ClassSchedule,
+    TrialLunchBreak,
+    EventLiveTiming,
+    EventDurationStat,
+)
 from app.engine.predictor import (
     predict_run,
     predict_run_from_block,
+    predict_run_from_event,
     format_predicted_time,
     flag_conflicts,
 )
@@ -43,6 +54,10 @@ def schedule_view(
     lb_records = db.query(TrialLunchBreak).filter(TrialLunchBreak.trial_id == trial_id).all()
     lunch_breaks = {(r.day, r.ring): (r.lunch_break_at, r.lunch_break_mins) for r in lb_records}
 
+    live_enabled = os.getenv("LIVE_PREDICTIONS_ENABLED", "1") != "0"
+    event_timings = _event_timings_for_trial(trial, db) if live_enabled else None
+    duration_stats = _duration_stats_for_trial(trial, db) if live_enabled else None
+
     day_blocks = _compute_catalogue_blocks(
         trial, db,
         base_start=trial_start,
@@ -50,9 +65,17 @@ def schedule_view(
         walk_mins=session.default_walk_mins,
         tpd_for_height=session.tpd_for,
         lunch_breaks=lunch_breaks,
+        event_timings=event_timings,
+        duration_stats=duration_stats,
     )
 
-    predictions = _build_predictions(session, trial, db, day_blocks=day_blocks, lunch_breaks=lunch_breaks)
+    predictions = _build_predictions(
+        session, trial, db,
+        day_blocks=day_blocks,
+        lunch_breaks=lunch_breaks,
+        event_timings=event_timings,
+        duration_stats=duration_stats,
+    )
 
     from app.friends import friend_data_state, build_friend_predictions, format_scraped_at
     from app.models import SessionFriend
@@ -61,14 +84,48 @@ def schedule_view(
         SessionFriend.session_uuid == uuid,
         SessionFriend.trial_id == trial_id,
     ).first() is not None
+    paper_block_starts: dict[tuple[str, int, int], datetime] | None = None
+    if live_enabled and event_timings:
+        paper_blocks = _compute_catalogue_blocks(
+            trial, db,
+            base_start=trial_start,
+            setup_mins=session.default_setup_mins,
+            walk_mins=session.default_walk_mins,
+            tpd_for_height=session.tpd_for,
+            lunch_breaks=lunch_breaks,
+        )
+        paper_block_starts = {
+            (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"]
+            for b in paper_blocks
+        }
+
     friend_groups = build_friend_predictions(
-        session, trial, db, day_blocks=day_blocks, lunch_breaks=lunch_breaks,
+        session, trial, db,
+        day_blocks=day_blocks,
+        lunch_breaks=lunch_breaks,
+        event_timings=event_timings if live_enabled else None,
+        paper_block_starts=paper_block_starts,
+        live_enabled=live_enabled,
     ) if has_friends else []
 
     combined = list(predictions) + [p for g in friend_groups for p in g["predictions"]]
     flag_conflicts(combined)
 
     selected_tab = tab if tab in ("yours", "friends", "crew", "full") else "yours"
+
+    ring_offsets: dict[str, str] = {}
+    for p in predictions:
+        ring_label = p.get("ring_label")
+        offset_str = p.get("ring_offset_str")
+        if ring_label and offset_str and ring_label not in ring_offsets:
+            ring_offsets[ring_label] = offset_str
+
+    any_running = False
+    if live_enabled and event_timings:
+        any_running = any(
+            t.started_at is not None and t.finished_at is None
+            for t in event_timings.values()
+        )
 
     user_block_keys = {(p["day"], p["event_name"], p["height_group"]) for p in predictions if not p["pending"]}
     for b in day_blocks:
@@ -103,6 +160,10 @@ def schedule_view(
                 datetime.combine(trial.start_date or date.today(), trial_start)
             ) if not has_class_schedules else None,
             "has_class_schedules": has_class_schedules,
+            "live_status": trial.live_status,
+            "live_synced_at": trial.live_synced_at,
+            "ring_offsets": ring_offsets,
+            "any_running": any_running,
             "friend_groups": friend_groups,
             "friend_data": data_state,
             "friend_data_str": format_scraped_at(data_state.get("scraped_at")),
@@ -206,6 +267,92 @@ def _ring_label(value: str | None) -> str | None:
     """Return a display label like 'Ring 1' from any ring_number format."""
     bare = _bare_ring(value)
     return f"Ring {bare}" if bare else None
+
+
+def _event_timings_for_trial(trial: Trial, db: DBSession) -> dict:
+    """Map (day, ring_number, event_name, height_group) → EventLiveTiming row."""
+    rows = db.query(EventLiveTiming).filter(EventLiveTiming.trial_id == trial.id).all()
+    return {(r.day, r.ring_number, r.event_name, r.height_group): r for r in rows}
+
+
+def _find_event_timing(
+    event_timings: dict | None,
+    day: int,
+    bare_ring: str | None,
+    event_name: str,
+    height_group: int,
+) -> EventLiveTiming | None:
+    """Look up live timing, matching bare live names to coded catalogue names."""
+    if not event_timings:
+        return None
+    bare_event = _strip_event_code(event_name)
+    if bare_ring:
+        hit = event_timings.get((day, bare_ring, bare_event, height_group))
+        if hit:
+            return hit
+    for (d, _ring, evt, hg), timing in event_timings.items():
+        if d == day and hg == height_group and _strip_event_code(evt) == bare_event:
+            return timing
+    return None
+
+
+def _duration_stats_for_trial(trial: Trial, db: DBSession) -> dict:
+    """Map (event_name, height_group) → EventDurationStat row."""
+    rows = db.query(EventDurationStat).filter(EventDurationStat.trial_id == trial.id).all()
+    return {(r.event_name, r.height_group): r for r in rows}
+
+
+def _estimate_segment_duration(
+    stat: EventDurationStat | None,
+    catalogue_count: int,
+    tpd: int,
+) -> int:
+    if stat and stat.median_duration_s:
+        return stat.median_duration_s
+    return catalogue_count * tpd
+
+
+def _ring_changeover_s(
+    trial_id: int,
+    ring_number: str,
+    day: int,
+    db: DBSession,
+    default_s: int,
+) -> int:
+    """Gap between consecutive finished→started segments on a ring today, else default."""
+    rows = (
+        db.query(EventLiveTiming)
+        .filter(
+            EventLiveTiming.trial_id == trial_id,
+            EventLiveTiming.day == day,
+            EventLiveTiming.ring_number == ring_number,
+            EventLiveTiming.started_at.isnot(None),
+        )
+        .order_by(EventLiveTiming.started_at)
+        .all()
+    )
+    gaps: list[int] = []
+    for i in range(len(rows) - 1):
+        prev, nxt = rows[i], rows[i + 1]
+        if prev.finished_at and nxt.started_at:
+            gap = int((nxt.started_at - prev.finished_at).total_seconds())
+            if gap >= 0:
+                gaps.append(gap)
+    if gaps:
+        gaps.sort()
+        return gaps[len(gaps) // 2]
+    return default_s
+
+
+def _format_ring_offset(paper_start: datetime | None, measured_start: datetime | None) -> str | None:
+    if not paper_start or not measured_start:
+        return None
+    mins = int(round((paper_start - measured_start).total_seconds() / 60))
+    if mins == 0:
+        return None
+    if mins > 0:
+        return f"{mins} min behind"
+    return f"{abs(mins)} min ahead"
 
 
 @router.post("/s/{uuid}/trials/{trial_id}/schedule/lunch-break")
@@ -323,6 +470,8 @@ def _compute_catalogue_blocks(
     walk_mins: int,
     tpd_for_height,
     lunch_breaks: dict[tuple[int, str], tuple[time | None, int]] | None = None,
+    event_timings: dict | None = None,
+    duration_stats: dict | None = None,
 ) -> list[dict]:
     """Estimate when each (event_name, height_group) block runs based purely on
     the catalogue. We assume two rings (agility + jumping) running in parallel
@@ -402,24 +551,86 @@ def _compute_catalogue_blocks(
             ring_lb = (lunch_breaks or {}).get((day_num, ring_name))
             lb_at: time | None = ring_lb[0] if ring_lb else None
             lb_mins: int = ring_lb[1] if ring_lb else 45
+            bare_ring = _bare_ring(ring_name)
+            changeover_s = (
+                _ring_changeover_s(
+                    trial.id, bare_ring, day_num, db,
+                    (setup_mins + walk_mins) * 60,
+                )
+                if event_timings and bare_ring
+                else (setup_mins + walk_mins) * 60
+            )
             for b in blocks:
-                if b["event_name"] != last_event:
-                    b["setup_mins"] = setup_mins
-                    b["walk_mins"] = walk_mins
-                    if last_event is None:
-                        # First event of the day: setup/walk happen before base_start
-                        b["setup_start"] = cursor - timedelta(minutes=setup_mins + walk_mins)
-                    else:
-                        b["setup_start"] = cursor
-                        cursor += timedelta(minutes=setup_mins + walk_mins)
-                    last_event = b["event_name"]
-                else:
+                timing = (
+                    _find_event_timing(
+                        event_timings, day_num, bare_ring, b["event_name"], b["height_group"],
+                    )
+                    if event_timings
+                    else None
+                )
+                tpd = tpd_for_height(b["height_group"], b["event_name"])
+
+                if timing and timing.finished_at:
                     b["setup_start"] = None
                     b["setup_mins"] = 0
                     b["walk_mins"] = 0
-                b["first_run"] = cursor
-                cursor += timedelta(seconds=b["count"] * tpd_for_height(b["height_group"], b["event_name"]))
-                b["last_run"] = cursor
+                    b["first_run"] = timing.started_at or timing.finished_at
+                    b["last_run"] = timing.finished_at
+                    cursor = timing.finished_at
+                    last_event = b["event_name"]
+                elif timing and timing.started_at:
+                    b["setup_start"] = None
+                    b["setup_mins"] = 0
+                    b["walk_mins"] = 0
+                    b["first_run"] = timing.started_at
+                    dur_s = _estimate_segment_duration(
+                        (duration_stats or {}).get((b["event_name"], b["height_group"])),
+                        b["count"],
+                        tpd,
+                    )
+                    b["last_run"] = timing.started_at + timedelta(seconds=dur_s)
+                    cursor = b["last_run"]
+                    last_event = b["event_name"]
+                elif event_timings:
+                    if b["event_name"] != last_event:
+                        b["setup_mins"] = setup_mins
+                        b["walk_mins"] = walk_mins
+                        if last_event is None:
+                            b["setup_start"] = cursor - timedelta(minutes=setup_mins + walk_mins)
+                        else:
+                            b["setup_start"] = cursor
+                            cursor += timedelta(seconds=changeover_s)
+                        last_event = b["event_name"]
+                    else:
+                        b["setup_start"] = None
+                        b["setup_mins"] = 0
+                        b["walk_mins"] = 0
+                    b["first_run"] = cursor
+                    dur_s = _estimate_segment_duration(
+                        (duration_stats or {}).get((b["event_name"], b["height_group"])),
+                        b["count"],
+                        tpd,
+                    )
+                    cursor += timedelta(seconds=dur_s)
+                    b["last_run"] = cursor
+                else:
+                    if b["event_name"] != last_event:
+                        b["setup_mins"] = setup_mins
+                        b["walk_mins"] = walk_mins
+                        if last_event is None:
+                            # First event of the day: setup/walk happen before base_start
+                            b["setup_start"] = cursor - timedelta(minutes=setup_mins + walk_mins)
+                        else:
+                            b["setup_start"] = cursor
+                            cursor += timedelta(minutes=setup_mins + walk_mins)
+                        last_event = b["event_name"]
+                    else:
+                        b["setup_start"] = None
+                        b["setup_mins"] = 0
+                        b["walk_mins"] = 0
+                    b["first_run"] = cursor
+                    cursor += timedelta(seconds=b["count"] * tpd)
+                    b["last_run"] = cursor
                 out.append(b)
                 if lb_at and not lunch_injected and cursor.time() >= lb_at:
                     lunch_start = cursor
@@ -477,13 +688,63 @@ def predict_catalogue_entry(
     is_friend: bool = False,
     handler_name: str | None = None,
     friend_id: int | None = None,
+    event_timings: dict | None = None,
+    paper_block_starts: dict[tuple[str, int, int], datetime] | None = None,
+    live_enabled: bool = False,
 ) -> dict:
     ce_day = getattr(ce, "day", 1) or 1
     cs = _match_class_schedule(all_class_schedules, ce.event_name, ce_day)
     day_date = (trial.start_date + timedelta(days=ce_day - 1)) if trial.start_date else None
     height_tpd = session.tpd_for(ce.height_group, ce.event_name)
+    raw_ring = ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None)
+    bare_ring = _bare_ring(raw_ring)
 
-    if cs and cs.scheduled_start:
+    timing = (
+        _find_event_timing(event_timings, ce_day, bare_ring, ce.event_name, ce.height_group)
+        if live_enabled and event_timings
+        else None
+    )
+
+    prediction_source = "scheduled"
+    event_started_at = None
+    ring_offset_str = None
+    live_finished = False
+    pred: dict = {}
+    predicted_start = None
+    predicted_start_str = None
+
+    if timing and timing.started_at and not timing.finished_at:
+        pred = predict_run_from_event(
+            event_started_at=timing.started_at,
+            run_position=ce.run_position,
+            avg_time_per_dog=height_tpd,
+            position_override=position_override,
+            time_per_dog_override=time_per_dog_override,
+        )
+        predicted_start = pred["predicted_start"]
+        predicted_start_str = format_predicted_time(predicted_start)
+        prediction_source = "event_live"
+        event_started_at = timing.started_at
+        if paper_block_starts:
+            ring_offset_str = _format_ring_offset(
+                paper_block_starts.get((ce.event_name, ce.height_group, ce_day)),
+                timing.started_at,
+            )
+    elif timing and timing.finished_at:
+        if timing.started_at:
+            pred = predict_run_from_event(
+                event_started_at=timing.started_at,
+                run_position=ce.run_position,
+                avg_time_per_dog=height_tpd,
+                position_override=position_override,
+                time_per_dog_override=time_per_dog_override,
+            )
+            predicted_start = pred["predicted_start"]
+            predicted_start_str = format_predicted_time(predicted_start)
+            event_started_at = timing.started_at
+        prediction_source = "event_live"
+        live_finished = True
+    elif cs and cs.scheduled_start:
         pred = predict_run(
             scheduled_start=cs.scheduled_start,
             ring_setup_mins=cs.ring_setup_mins or session.default_setup_mins,
@@ -506,12 +767,7 @@ def predict_catalogue_entry(
         )
         predicted_start = pred["predicted_start"]
         predicted_start_str = format_predicted_time(predicted_start)
-    else:
-        pred = {}
-        predicted_start = None
-        predicted_start_str = None
 
-    raw_ring = ring_number or (cs.ring_number if cs else None) or getattr(ce, "ring_number", None)
     card_id = f"friend-{friend_id}-{ce.id}" if is_friend and friend_id else f"{entry_id}-{ce.id}"
     return {
         "entry_id": entry_id,
@@ -540,6 +796,10 @@ def predict_catalogue_entry(
         "conflicts_with": [],
         "is_friend": is_friend,
         "friend_id": friend_id,
+        "prediction_source": prediction_source,
+        "event_started_at": event_started_at,
+        "ring_offset_str": ring_offset_str,
+        "live_finished": live_finished,
     }
 
 
@@ -550,6 +810,8 @@ def _build_predictions(
     *,
     day_blocks: list[dict] | None = None,
     lunch_breaks: dict[tuple[int, str], tuple[time | None, int]] | None = None,
+    event_timings: dict | None = None,
+    duration_stats: dict | None = None,
 ) -> list[dict]:
     entries = (
         db.query(SessionEntry)
@@ -557,19 +819,43 @@ def _build_predictions(
         .all()
     )
 
-    if day_blocks is None:
-        # Recompute when called from the override handler — cheap.
-        if lunch_breaks is None:
-            lb_records = db.query(TrialLunchBreak).filter(TrialLunchBreak.trial_id == trial.id).all()
-            lunch_breaks = {(r.day, r.ring): (r.lunch_break_at, r.lunch_break_mins) for r in lb_records}
-        day_blocks = _compute_catalogue_blocks(
-            trial, db,
-            base_start=trial.start_time or DEFAULT_TRIAL_START,
-            setup_mins=session.default_setup_mins,
-            walk_mins=session.default_walk_mins,
-            tpd_for_height=session.tpd_for,
-            lunch_breaks=lunch_breaks,
-        )
+    live_enabled = os.getenv("LIVE_PREDICTIONS_ENABLED", "1") != "0"
+    block_kwargs = dict(
+        base_start=trial.start_time or DEFAULT_TRIAL_START,
+        setup_mins=session.default_setup_mins,
+        walk_mins=session.default_walk_mins,
+        tpd_for_height=session.tpd_for,
+    )
+
+    if lunch_breaks is None:
+        lb_records = db.query(TrialLunchBreak).filter(TrialLunchBreak.trial_id == trial.id).all()
+        lunch_breaks = {(r.day, r.ring): (r.lunch_break_at, r.lunch_break_mins) for r in lb_records}
+
+    paper_block_starts: dict[tuple[str, int, int], datetime] = {}
+    if live_enabled:
+        if event_timings is None:
+            event_timings = _event_timings_for_trial(trial, db)
+        if duration_stats is None:
+            duration_stats = _duration_stats_for_trial(trial, db)
+        paper_blocks = _compute_catalogue_blocks(trial, db, lunch_breaks=lunch_breaks, **block_kwargs)
+        paper_block_starts = {
+            (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"]
+            for b in paper_blocks
+        }
+        if day_blocks is None:
+            day_blocks = _compute_catalogue_blocks(
+                trial, db,
+                lunch_breaks=lunch_breaks,
+                event_timings=event_timings,
+                duration_stats=duration_stats,
+                **block_kwargs,
+            )
+    elif day_blocks is None:
+        day_blocks = _compute_catalogue_blocks(trial, db, lunch_breaks=lunch_breaks, **block_kwargs)
+        event_timings = {}
+    else:
+        event_timings = event_timings or {}
+
     block_starts: dict[tuple[str, int, int], datetime] = {
         (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"] for b in day_blocks
     }
@@ -608,6 +894,10 @@ def _build_predictions(
                 "conflict_with_yours": False,
                 "conflicts_with": [],
                 "is_friend": False,
+                "prediction_source": "scheduled",
+                "event_started_at": None,
+                "ring_offset_str": None,
+                "live_finished": False,
             })
             continue
 
@@ -623,6 +913,9 @@ def _build_predictions(
                 ring_number=entry.ring_number,
                 position_override=entry.position_override,
                 time_per_dog_override=entry.time_per_dog_override,
+                event_timings=event_timings if live_enabled else None,
+                paper_block_starts=paper_block_starts if live_enabled else None,
+                live_enabled=live_enabled,
             ))
 
     predictions.sort(key=lambda p: (p["predicted_start"] is None, p["predicted_start"] or ""))

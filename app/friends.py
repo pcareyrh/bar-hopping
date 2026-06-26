@@ -252,6 +252,9 @@ def build_friend_predictions(
     *,
     day_blocks: list[dict] | None = None,
     lunch_breaks: dict | None = None,
+    event_timings: dict | None = None,
+    paper_block_starts: dict | None = None,
+    live_enabled: bool = False,
 ) -> list[dict]:
     """Predicted runs for all pinned friends, grouped with metadata."""
     friends = (
@@ -317,6 +320,9 @@ def build_friend_predictions(
                     is_friend=True,
                     handler_name=ce.handler_name or friend.label,
                     friend_id=friend.id,
+                    event_timings=event_timings if live_enabled else None,
+                    paper_block_starts=paper_block_starts if live_enabled else None,
+                    live_enabled=live_enabled,
                 )
                 friend_preds.append(pred)
 

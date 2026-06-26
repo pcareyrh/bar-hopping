@@ -63,6 +63,8 @@ def _migrate() -> None:
         )
         _add_column_if_missing(conn, "catalogue_entries", "ring_number", "VARCHAR")
         _add_column_if_missing(conn, "class_schedules", "day", "INTEGER")
+        _add_column_if_missing(conn, "trials", "live_status", "VARCHAR")
+        _add_column_if_missing(conn, "trials", "live_synced_at", "DATETIME")
 
         # Widen unique constraint to include day (Nationals: same dog runs same event on multiple days).
         if conn.dialect.name == "postgresql":
@@ -77,6 +79,12 @@ def _migrate() -> None:
 
         conn.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_trials_start_date ON trials(start_date)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_event_live_timings_trial_id ON event_live_timings(trial_id)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_event_duration_stats_trial_id ON event_duration_stats(trial_id)"
         ))
 
 
