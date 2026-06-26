@@ -1,5 +1,5 @@
 """Tests for live timing lookup against coded catalogue event names."""
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -16,6 +16,7 @@ from app.models import (
     friend_pin_key,
 )
 from app.routers.schedule import (
+    _compute_catalogue_blocks,
     _event_timings_for_trial,
     _find_event_timing,
     predict_catalogue_entry,
@@ -90,6 +91,82 @@ def test_predict_catalogue_entry_matches_coded_name_to_live_timing(db):
     assert pred["prediction_source"] == "event_live"
     assert pred["event_started_at"] == started
     assert pred["predicted_start"] is not None
+
+
+def test_predict_catalogue_entry_shows_offset_from_paper_schedule(db):
+    session, trial = _seed_trial(db)
+    started = datetime(2026, 6, 28, 10, 15)
+    db.add(
+        EventLiveTiming(
+            trial_id=trial.id,
+            day=1,
+            ring_id="351",
+            ring_number="1",
+            event_name="Masters Agility",
+            height_group=500,
+            started_at=started,
+            finished_at=None,
+            status="Running",
+        )
+    )
+    ce = CatalogueEntry(
+        trial_id=trial.id,
+        day=1,
+        event_name="Masters Agility",
+        height_group=500,
+        height_group_total=12,
+        cat_number="410",
+        dog_name="Fika",
+        handler_name="Jane Smith",
+        run_position=3,
+        ring_number="1",
+    )
+    db.add(ce)
+    db.commit()
+
+    paper_blocks = _compute_catalogue_blocks(
+        trial,
+        db,
+        base_start=time(9, 0),
+        setup_mins=session.default_setup_mins,
+        walk_mins=session.default_walk_mins,
+        tpd_for_height=session.tpd_for,
+    )
+    paper_block_starts = {
+        (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"]
+        for b in paper_blocks
+    }
+    live_blocks = _compute_catalogue_blocks(
+        trial,
+        db,
+        base_start=time(9, 0),
+        setup_mins=session.default_setup_mins,
+        walk_mins=session.default_walk_mins,
+        tpd_for_height=session.tpd_for,
+        event_timings=_event_timings_for_trial(trial, db),
+    )
+    block_starts = {
+        (b["event_name"], b["height_group"], b.get("day", 1)): b["first_run"]
+        for b in live_blocks
+    }
+
+    pred = predict_catalogue_entry(
+        ce=ce,
+        session=session,
+        trial=trial,
+        all_class_schedules=[],
+        block_starts=block_starts,
+        entry_id=1,
+        event_timings=_event_timings_for_trial(trial, db),
+        paper_block_starts=paper_block_starts,
+        live_enabled=True,
+    )
+
+    assert pred["paper_predicted_start_str"]
+    assert pred["prediction_offset_str"]
+    assert pred["paper_predicted_start_str"] == "9:03 AM"
+    assert pred["predicted_start"] == started + timedelta(seconds=90 * 2)
+    assert pred["prediction_offset_str"] == "75 min ahead"
 
 
 def test_find_event_timing_fallback_without_numeric_ring(db):

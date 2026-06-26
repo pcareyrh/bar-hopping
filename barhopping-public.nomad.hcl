@@ -41,7 +41,6 @@ variable "openrouter_enabled" {
 variable "openrouter_api_key" {
   type      = string
   default   = ""
-  sensitive = true
 }
 
 variable "openrouter_model" {

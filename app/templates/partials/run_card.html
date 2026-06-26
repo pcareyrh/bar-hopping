@@ -51,11 +51,17 @@
         {% if p.predicted_start_str %}
         <p class="text-2xl font-bold text-brand font-mono tabular-nums">{{ p.predicted_start_str }}</p>
         <p class="text-xs text-green-600 font-medium">Done</p>
+        {% if p.paper_predicted_start_str and p.prediction_offset_str %}
+        <p class="text-xs text-gray-400 mt-0.5">Was {{ p.paper_predicted_start_str }} · {{ p.prediction_offset_str }}</p>
+        {% endif %}
         {% else %}
         <span class="inline-block text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">Completed</span>
         {% endif %}
       {% elif p.predicted_start_str %}
       <p class="text-2xl font-bold text-brand font-mono tabular-nums">{{ p.predicted_start_str }}</p>
+      {% if p.paper_predicted_start_str and p.prediction_offset_str %}
+      <p class="text-xs text-gray-400 mt-0.5">Was {{ p.paper_predicted_start_str }} · {{ p.prediction_offset_str }}</p>
+      {% endif %}
       {% elif p.pending %}
       <p class="text-xs text-amber-600 font-medium">Catalogue pending</p>
       {% else %}
