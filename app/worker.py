@@ -1,19 +1,23 @@
 """RQ job functions executed inside the worker container."""
 import asyncio
+import json
 import logging
 import os
 import re as _re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 from app.database import SessionLocal
 from app.models import Session, Trial, SessionEntry, CatalogueEntry, ClassSchedule
 from app import crypto
-from app.queue import set_sync_status, get_queue
+from app.queue import set_sync_status, get_queue, get_redis
 from app.trial_dates import trial_model_active_on, update_trial_end_date
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("worker")
 DOC_REFRESH_JOB_TIMEOUT = 900
+LIVE_POLL_INTERVAL = 45
+LIVE_POLL_JOB_TIMEOUT = 120
+LIVE_SWEEP_STALE_MINUTES = 5
 
 
 def sync_session_job(session_uuid: str) -> None:
@@ -172,6 +176,17 @@ def sync_session_job(session_uuid: str) -> None:
             db.commit()
 
             queue = get_queue()
+            for trial in user_trial_rows:
+                if trial_model_active_on(trial):
+                    log.info(
+                        "sync_session_job: enqueuing live tracking for trial %s",
+                        trial.external_id,
+                    )
+                    queue.enqueue(
+                        "app.worker.start_live_tracking_job",
+                        trial.id,
+                        job_timeout=LIVE_POLL_JOB_TIMEOUT,
+                    )
             for trial in user_trial_rows:
                 has_cat_rows = db.query(CatalogueEntry.id).filter(
                     CatalogueEntry.trial_id == trial.id
@@ -493,6 +508,152 @@ def upload_catalogue_job(trial_id: int, data: bytes, content_type: str) -> None:
     except Exception:
         db.rollback()
         raise
+    finally:
+        db.close()
+
+
+def _live_trial_day(trial: Trial) -> int:
+    """Return catalogue day number: 1 by default, or today relative to start_date for multi-day trials."""
+    day = 1
+    if (
+        trial.start_date
+        and trial.end_date
+        and trial.end_date > trial.start_date
+    ):
+        day = (date.today() - trial.start_date).days + 1
+        if day < 1:
+            day = 1
+    return day
+
+
+def _live_ring_snapshots_key(trial_id: int) -> str:
+    return f"live_rings:{trial_id}"
+
+
+def _load_live_ring_snapshots(trial_id: int) -> dict:
+    try:
+        raw = get_redis().get(_live_ring_snapshots_key(trial_id))
+        if not raw:
+            return {}
+        return json.loads(raw)
+    except Exception as e:
+        log.warning(
+            "poll_live_trial_job: failed to load ring snapshots for trial %d: %s",
+            trial_id,
+            e,
+        )
+        return {}
+
+
+def _store_live_ring_snapshots(trial_id: int, snapshots: dict) -> None:
+    try:
+        get_redis().set(_live_ring_snapshots_key(trial_id), json.dumps(snapshots))
+    except Exception as e:
+        log.warning(
+            "poll_live_trial_job: failed to store ring snapshots for trial %d: %s",
+            trial_id,
+            e,
+        )
+
+
+def _derive_live_status(rings: list[dict]) -> str:
+    if not rings:
+        return "done"
+    statuses = [r.get("status") for r in rings]
+    if any(s in ("Running", "Height Change") for s in statuses):
+        return "live"
+    if all(s == "Complete" for s in statuses):
+        return "done"
+    return "idle"
+
+
+def poll_live_trial_job(trial_id: int) -> None:
+    """Fetch TopDog ring status and update EventLiveTiming rows for a trial."""
+    async def _run():
+        from app.scraper.live import fetch_ring_status
+        from app.live_tracking import apply_ring_snapshots
+
+        db = SessionLocal()
+        try:
+            trial = db.query(Trial).filter(Trial.id == trial_id).first()
+            if not trial:
+                log.warning("poll_live_trial_job: trial %d not found", trial_id)
+                return
+
+            log.info("poll_live_trial_job: polling trial %s (id=%d)", trial.external_id, trial_id)
+            payload = await fetch_ring_status(trial.external_id)
+            rings = payload.get("rings") or []
+            observed_at = payload.get("observed_at") or datetime.utcnow()
+
+            prev = _load_live_ring_snapshots(trial_id)
+            day = _live_trial_day(trial)
+            apply_ring_snapshots(db, trial_id, day, prev, rings, observed_at)
+
+            new_prev = {str(r["ring_id"]): r for r in rings if r.get("ring_id") is not None}
+            _store_live_ring_snapshots(trial_id, new_prev)
+
+            trial.live_synced_at = datetime.utcnow()
+            trial.live_status = _derive_live_status(rings)
+            db.commit()
+
+            log.info(
+                "poll_live_trial_job: trial %s live_status=%s (%d rings)",
+                trial.external_id,
+                trial.live_status,
+                len(rings),
+            )
+
+            if trial.live_status == "live":
+                get_queue().enqueue_in(
+                    timedelta(seconds=LIVE_POLL_INTERVAL),
+                    "app.worker.poll_live_trial_job",
+                    trial_id,
+                    job_timeout=LIVE_POLL_JOB_TIMEOUT,
+                )
+        finally:
+            db.close()
+
+    asyncio.run(_run())
+
+
+def start_live_tracking_job(trial_id: int) -> None:
+    """Kick off (or refresh) live ring polling for a trial."""
+    log.info("start_live_tracking_job: enqueuing poll for trial %d", trial_id)
+    get_queue().enqueue(
+        "app.worker.poll_live_trial_job",
+        trial_id,
+        job_timeout=LIVE_POLL_JOB_TIMEOUT,
+    )
+
+
+def sweep_live_trials_job() -> None:
+    """Ensure active trials with session entries have a recent live poller."""
+    db = SessionLocal()
+    try:
+        trial_ids = [row[0] for row in db.query(SessionEntry.trial_id).distinct().all()]
+        stale_before = datetime.utcnow() - timedelta(minutes=LIVE_SWEEP_STALE_MINUTES)
+        queue = get_queue()
+        enqueued = 0
+        for trial_id in trial_ids:
+            trial = db.query(Trial).filter(Trial.id == trial_id).first()
+            if not trial or not trial_model_active_on(trial):
+                continue
+            if trial.live_status == "done":
+                continue
+            if trial.live_synced_at is not None and trial.live_synced_at >= stale_before:
+                continue
+            log.info(
+                "sweep_live_trials_job: enqueuing live tracking for trial %s (id=%d)",
+                trial.external_id,
+                trial.id,
+            )
+            queue.enqueue(
+                "app.worker.start_live_tracking_job",
+                trial.id,
+                job_timeout=LIVE_POLL_JOB_TIMEOUT,
+            )
+            enqueued += 1
+        log.info("sweep_live_trials_job: enqueued %d trial(s)", enqueued)
     finally:
         db.close()
 

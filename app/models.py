@@ -65,11 +65,15 @@ class Trial(Base):
     scraped_at = Column(DateTime, nullable=True)
     lunch_break_at = Column(Time, nullable=True)
     lunch_break_mins = Column(Integer, nullable=True)
+    live_status = Column(String, nullable=True)  # idle|live|done
+    live_synced_at = Column(DateTime, nullable=True)
 
     catalogue_entries = relationship("CatalogueEntry", back_populates="trial", cascade="all, delete-orphan")
     class_schedules = relationship("ClassSchedule", back_populates="trial", cascade="all, delete-orphan")
     session_entries = relationship("SessionEntry", back_populates="trial")
     lunch_breaks = relationship("TrialLunchBreak", back_populates="trial", cascade="all, delete-orphan")
+    event_live_timings = relationship("EventLiveTiming", back_populates="trial")
+    event_duration_stats = relationship("EventDurationStat", back_populates="trial")
 
 
 class CatalogueEntry(Base):
@@ -141,5 +145,45 @@ class SessionEntry(Base):
     session = relationship("Session", back_populates="entries")
     trial = relationship("Trial", back_populates="session_entries")
     catalogue_entry = relationship("CatalogueEntry")
+
+
+class EventLiveTiming(Base):
+    __tablename__ = "event_live_timings"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trial_id = Column(Integer, ForeignKey("trials.id"), nullable=False, index=True)
+    day = Column(Integer, nullable=False, default=1)
+    ring_id = Column(String, nullable=False)  # TopDog internal e.g. "351"
+    ring_number = Column(String, nullable=False)  # bare "1"
+    event_name = Column(String, nullable=False)
+    height_group = Column(Integer, nullable=False)
+    status = Column(String, nullable=True)  # Running/Complete/Height Change/Not Running
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    pause_s = Column(Integer, nullable=False, default=0)  # accumulated pause seconds
+    duration_s = Column(Integer, nullable=True)
+    start_confidence = Column(String, nullable=True)  # high | low
+    observed_at = Column(DateTime, nullable=True)
+
+    trial = relationship("Trial", back_populates="event_live_timings")
+
+    __table_args__ = (UniqueConstraint("trial_id", "day", "ring_number", "event_name", "height_group"),)
+
+
+class EventDurationStat(Base):
+    __tablename__ = "event_duration_stats"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    trial_id = Column(Integer, ForeignKey("trials.id"), nullable=False, index=True)
+    event_name = Column(String, nullable=False)
+    height_group = Column(Integer, nullable=False)
+    sample_count = Column(Integer, nullable=False, default=0)
+    median_duration_s = Column(Integer, nullable=True)
+    last_duration_s = Column(Integer, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+    trial = relationship("Trial", back_populates="event_duration_stats")
+
+    __table_args__ = (UniqueConstraint("trial_id", "event_name", "height_group"),)
 
 
