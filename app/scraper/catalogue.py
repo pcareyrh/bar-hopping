@@ -498,6 +498,19 @@ def parse_catalogue_pdf_bytes_sync(
     )
 
 
+async def download_catalogue_pdf(url: str) -> bytes | None:
+    """Download catalogue bytes when the URL points at a PDF; otherwise return None."""
+    async with httpx.AsyncClient(follow_redirects=True, timeout=60) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+    content_type = resp.headers.get("content-type", "")
+    if "pdf" in content_type or url.lower().endswith(".pdf") or url.endswith("/get"):
+        if resp.content[:5] == b"%PDF-" or "pdf" in content_type:
+            log.info("Downloaded catalogue PDF (%d bytes) from %s", len(resp.content), url)
+            return resp.content
+    return None
+
+
 async def download_and_parse_catalogue(
     url: str,
     *,
