@@ -64,7 +64,7 @@ def _migrate() -> None:
         _add_column_if_missing(conn, "catalogue_entries", "ring_number", "VARCHAR")
         _add_column_if_missing(conn, "class_schedules", "day", "INTEGER")
         _add_column_if_missing(conn, "trials", "live_status", "VARCHAR")
-        _add_column_if_missing(conn, "trials", "live_synced_at", "DATETIME")
+        _add_column_if_missing(conn, "trials", "live_synced_at", "TIMESTAMP")
 
         # Widen unique constraint to include day (Nationals: same dog runs same event on multiple days).
         if conn.dialect.name == "postgresql":
