@@ -98,8 +98,7 @@
       <p>Friend data from the catalogue{% if friend_data_str %} · updated {{ friend_data_str }}{% endif %}.</p>
       {% elif friend_data.state == 'partial' %}
       <p>Some days ready{% if friend_data_str %} · updated {{ friend_data_str }}{% endif %}.
-        {% if friend_data.pending_days %}Day{{ 's' if friend_data.pending_days | length > 1 else '' }}
-        {{ friend_data.pending_days | join(', ') }} not available yet.{% endif %}
+        {% if friend_data.pending_days %}{% for d in friend_data.pending_days %}Day {{ d }}{% if day_dates[d] %} — {{ day_dates[d].strftime("%-d %b") }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %} not available yet.{% endif %}
       </p>
       {% elif friend_data.state == 'summary_only' %}
       <p>Only a summary is available — individual competitors can't be looked up yet.</p>
@@ -189,7 +188,7 @@
       {% set ns = namespace(prev_day=0) %}
       {% for p in g.predictions %}
       {% if pred_days | length > 1 and p.day and p.day != ns.prev_day %}
-      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-1">Day {{ p.day }}</p>
+      <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider pt-1">Day {{ p.day }}{% if day_dates[p.day] %} — {{ day_dates[p.day].strftime("%-d %b") }}{% endif %}</p>
       {% set ns.prev_day = p.day %}
       {% endif %}
       {% with p=p %}
