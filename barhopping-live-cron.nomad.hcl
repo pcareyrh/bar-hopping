@@ -1,6 +1,7 @@
 job "bar-hopping-live-cron" {
   datacenters = ["dc1"]
   type        = "batch"
+  node_pool   = "nfs-nodes"
 
   periodic {
     cron             = "*/5 7-18 * * *"

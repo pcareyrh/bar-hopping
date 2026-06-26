@@ -404,6 +404,10 @@ async def extract_lunch_breaks_from_pdf(
 ) -> list[dict]:
     """Return [{day, ring, lunch_break_at, lunch_break_mins}, ...] from timetable pages."""
     if not is_openrouter_timetable_enabled():
+        log.info(
+            "openrouter_timetable: disabled — skipping lunch extraction for trial=%s",
+            trial_external_id or "?",
+        )
         return []
 
     api_key = _env("OPENROUTER_API_KEY")

@@ -204,7 +204,7 @@ def test_refresh_fill_missing_preserves_manual_breaks(db, monkeypatch):
 
     pdf_data = b"%PDF-1.4 nationals"
 
-    async def fake_download_catalogue_pdf(url):
+    async def fake_download_catalogue_pdf(url, *, cookies=None):
         assert url == trial.catalogue_doc_url
         return pdf_data
 

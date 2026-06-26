@@ -359,6 +359,46 @@ def _format_ring_offset(paper_start: datetime | None, measured_start: datetime |
     return f"{abs(mins)} min ahead"
 
 
+def _predict_paper_start(
+    *,
+    ce: CatalogueEntry,
+    session: Session,
+    trial: Trial,
+    all_class_schedules: list[ClassSchedule],
+    paper_block_starts: dict[tuple[str, int, int], datetime],
+    position_override: int | None = None,
+    time_per_dog_override: int | None = None,
+) -> datetime | None:
+    """Original paper-schedule prediction without live event timings."""
+    ce_day = getattr(ce, "day", 1) or 1
+    cs = _match_class_schedule(all_class_schedules, ce.event_name, ce_day)
+    day_date = (trial.start_date + timedelta(days=ce_day - 1)) if trial.start_date else None
+    height_tpd = session.tpd_for(ce.height_group, ce.event_name)
+
+    if cs and cs.scheduled_start:
+        return predict_run(
+            scheduled_start=cs.scheduled_start,
+            ring_setup_mins=cs.ring_setup_mins or session.default_setup_mins,
+            walk_mins=cs.walk_mins or session.default_walk_mins,
+            run_position=ce.run_position,
+            avg_time_per_dog=height_tpd,
+            trial_date=day_date,
+            position_override=position_override,
+            time_per_dog_override=time_per_dog_override,
+        )["predicted_start"]
+
+    paper_key = (ce.event_name, ce.height_group, ce_day)
+    if paper_key not in paper_block_starts:
+        return None
+    return predict_run_from_block(
+        block_first_run=paper_block_starts[paper_key],
+        run_position=ce.run_position,
+        avg_time_per_dog=height_tpd,
+        position_override=position_override,
+        time_per_dog_override=time_per_dog_override,
+    )["predicted_start"]
+
+
 @router.post("/s/{uuid}/trials/{trial_id}/schedule/lunch-break")
 def update_lunch_break(
     uuid: str,
@@ -772,6 +812,22 @@ def predict_catalogue_entry(
         predicted_start = pred["predicted_start"]
         predicted_start_str = format_predicted_time(predicted_start)
 
+    paper_predicted_start_str = None
+    prediction_offset_str = None
+    if paper_block_starts is not None and predicted_start is not None:
+        paper_start = _predict_paper_start(
+            ce=ce,
+            session=session,
+            trial=trial,
+            all_class_schedules=all_class_schedules,
+            paper_block_starts=paper_block_starts,
+            position_override=position_override,
+            time_per_dog_override=time_per_dog_override,
+        )
+        if paper_start is not None:
+            paper_predicted_start_str = format_predicted_time(paper_start)
+            prediction_offset_str = _format_ring_offset(paper_start, predicted_start)
+
     card_id = f"friend-{friend_id}-{ce.id}" if is_friend and friend_id else f"{entry_id}-{ce.id}"
     return {
         "entry_id": entry_id,
@@ -803,6 +859,8 @@ def predict_catalogue_entry(
         "prediction_source": prediction_source,
         "event_started_at": event_started_at,
         "ring_offset_str": ring_offset_str,
+        "paper_predicted_start_str": paper_predicted_start_str,
+        "prediction_offset_str": prediction_offset_str,
         "live_finished": live_finished,
     }
 
@@ -901,6 +959,8 @@ def _build_predictions(
                 "prediction_source": "scheduled",
                 "event_started_at": None,
                 "ring_offset_str": None,
+                "paper_predicted_start_str": None,
+                "prediction_offset_str": None,
                 "live_finished": False,
             })
             continue

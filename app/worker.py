@@ -297,6 +297,53 @@ def _merge_lunch_breaks(
         db.add(TrialLunchBreak(trial_id=trial_id, **b))
 
 
+def _catalogue_pdf_urls(trial: Trial) -> list[str]:
+    """URLs to try when fetching a catalogue PDF for timetable/lunch extraction."""
+    base = "https://www.topdogevents.com.au"
+    candidates: list[str] = []
+    if trial.catalogue_doc_url:
+        candidates.append(trial.catalogue_doc_url)
+    if trial.external_id:
+        candidates.append(f"{base}/trials/{trial.external_id}/catalogue/get")
+    if trial.schedule_doc_url:
+        candidates.append(trial.schedule_doc_url)
+    seen: set[str] = set()
+    out: list[str] = []
+    for url in candidates:
+        if url and url not in seen and not url.rstrip("/").endswith("/entries"):
+            seen.add(url)
+            out.append(url)
+    return out
+
+
+async def _fetch_catalogue_pdf_bytes(
+    trial: Trial,
+    cookies: dict[str, str] | None,
+) -> bytes | None:
+    from app.scraper.catalogue import download_catalogue_pdf
+
+    for url in _catalogue_pdf_urls(trial):
+        try:
+            pdf_data = await download_catalogue_pdf(url, cookies=cookies)
+        except Exception as e:
+            log.warning(
+                "fetch_catalogue_pdf: download failed for trial %s url=%s: %s",
+                trial.external_id,
+                url,
+                e,
+            )
+            continue
+        if pdf_data:
+            log.info(
+                "fetch_catalogue_pdf: downloaded %d bytes for trial %s from %s",
+                len(pdf_data),
+                trial.external_id,
+                url,
+            )
+            return pdf_data
+    return None
+
+
 async def _extract_and_merge_lunch_breaks(
     db,
     trial_id: int,
@@ -444,6 +491,7 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None, frien
                 update_trial_end_date(trial, db)
                 _resolve_catalogue_links(trial, db)
 
+                lunch_extracted = False
                 # my_day may only cover the current/next day (e.g. Saturday
                 # before the trial starts). Merge any additional days from the
                 # full catalogue PDF without touching days my_day already updated.
@@ -451,7 +499,10 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None, frien
                     try:
                         pdf_data = None
                         try:
-                            pdf_data = await download_catalogue_pdf(trial.catalogue_doc_url)
+                            pdf_data = await download_catalogue_pdf(
+                                trial.catalogue_doc_url,
+                                cookies=cookies,
+                            )
                         except Exception as e:
                             log.warning(
                                 "refresh_trial_docs_job: catalogue PDF download failed: %s", e
@@ -491,12 +542,31 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None, frien
                                     fill_missing_only=True,
                                 )
                                 db.commit()
+                                lunch_extracted = True
                             except Exception as e:
                                 log.warning(
                                     "refresh_trial_docs_job: lunch break extraction failed: %s", e
                                 )
                     except Exception as e:
                         log.warning("refresh_trial_docs_job: catalogue supplement failed: %s", e)
+
+                if not lunch_extracted:
+                    try:
+                        pdf_data = await _fetch_catalogue_pdf_bytes(trial, cookies)
+                        if pdf_data:
+                            await _extract_and_merge_lunch_breaks(
+                                db,
+                                trial_id,
+                                pdf_data,
+                                trial.external_id,
+                                fill_missing_only=True,
+                            )
+                            db.commit()
+                    except Exception as e:
+                        log.warning(
+                            "refresh_trial_docs_job: lunch break extraction after my_day failed: %s",
+                            e,
+                        )
 
                 return
 
@@ -517,7 +587,10 @@ def refresh_trial_docs_job(trial_id: int, session_uuid: str | None = None, frien
                     else:
                         log.info("refresh_trial_docs_job: fetching catalogue from %s", trial.catalogue_doc_url)
                         try:
-                            pdf_data = await download_catalogue_pdf(trial.catalogue_doc_url)
+                            pdf_data = await download_catalogue_pdf(
+                                trial.catalogue_doc_url,
+                                cookies=cookies,
+                            )
                         except Exception as e:
                             log.warning(
                                 "refresh_trial_docs_job: catalogue PDF download failed: %s", e
