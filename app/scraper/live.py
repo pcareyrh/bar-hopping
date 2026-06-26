@@ -5,7 +5,7 @@ Event-level fields only — per-dog #last_run and #class_runs_left are ignored.
 """
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 from bs4 import BeautifulSoup
@@ -95,6 +95,6 @@ async def fetch_ring_status(trial_external_id: str) -> dict:
 
     return {
         "trial_external_id": trial_external_id,
-        "observed_at": datetime.utcnow(),
+        "observed_at": datetime.now(timezone.utc),
         "rings": rings,
     }

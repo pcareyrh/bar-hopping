@@ -1,6 +1,6 @@
 import re
 import uuid
-from datetime import datetime, date, time
+from datetime import datetime, date, time, timezone
 from sqlalchemy import (
     Column, String, Integer, Boolean, DateTime, Date, Time, Float,
     ForeignKey, UniqueConstraint,
@@ -13,6 +13,10 @@ def _new_uuid():
     return str(uuid.uuid4())
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 HEIGHT_GROUPS = (200, 300, 400, 500, 600)
 
 
@@ -20,7 +24,7 @@ class Session(Base):
     __tablename__ = "sessions"
 
     uuid = Column(String, primary_key=True, default=_new_uuid)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
     topdog_email = Column(String, nullable=True)       # Fernet-encrypted
     topdog_password = Column(String, nullable=True)    # Fernet-encrypted
     topdog_synced_at = Column(DateTime, nullable=True)
@@ -200,7 +204,7 @@ class SessionFriend(Base):
     cat_number = Column(String, nullable=True)
     label = Column(String, nullable=True)
     pin_key = Column(String, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     session = relationship("Session", back_populates="friends")
     trial = relationship("Trial", back_populates="session_friends")
