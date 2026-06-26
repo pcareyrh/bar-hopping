@@ -1,19 +1,51 @@
 """Transition logic for live ring board snapshots (worker-only)."""
 from __future__ import annotations
 
+import json
 import statistics
 from datetime import datetime, timezone
 
+from app.engine.predictor import AEST_OFFSET
 from app.models import EventDurationStat, EventLiveTiming
 
 _PAUSE_STATUSES = frozenset({"Height Change", "Not Running"})
+_SNAPSHOT_DATETIME_FIELDS = frozenset({"updated", "pause_started_at"})
 
 
-def _to_naive_utc(dt: datetime) -> datetime:
-    """Store as naive UTC for SQLite/Postgres parity with existing datetime columns."""
+def _to_naive_aest(dt: datetime) -> datetime:
+    """Convert to naive AEST wall clock for schedule/predictor parity."""
     if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
+        utc = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    else:
+        utc = dt
+    return utc + AEST_OFFSET
+
+
+def serialize_ring_snapshots(snapshots: dict[str, dict]) -> str:
+    """JSON-safe ring snapshot state for Redis."""
+    out: dict[str, dict] = {}
+    for ring_id, snap in snapshots.items():
+        serialized = dict(snap)
+        for field in _SNAPSHOT_DATETIME_FIELDS:
+            value = serialized.get(field)
+            if isinstance(value, datetime):
+                serialized[field] = value.isoformat()
+        out[ring_id] = serialized
+    return json.dumps(out)
+
+
+def deserialize_ring_snapshots(raw: str) -> dict[str, dict]:
+    """Restore ring snapshot state from Redis JSON."""
+    data = json.loads(raw)
+    out: dict[str, dict] = {}
+    for ring_id, snap in data.items():
+        deserialized = dict(snap)
+        for field in _SNAPSHOT_DATETIME_FIELDS:
+            value = deserialized.get(field)
+            if isinstance(value, str):
+                deserialized[field] = datetime.fromisoformat(value)
+        out[ring_id] = deserialized
+    return out
 
 
 def segment_key(
@@ -26,7 +58,7 @@ def segment_key(
 
 
 def _transition_at(curr: dict, observed_at: datetime) -> datetime:
-    return _to_naive_utc(curr.get("updated") or observed_at)
+    return _to_naive_aest(curr.get("updated") or observed_at)
 
 
 def _same_event(prev: dict | None, curr: dict) -> bool:
@@ -210,7 +242,7 @@ def _apply_ring_snapshot(
     row = _get_or_create_timing(db, trial_id, day, curr)
 
     if event_changed or prev is None:
-        if curr["status"] == "Running":
+        if curr["status"] == "Running" and row.started_at is None:
             row.started_at = at
             row.start_confidence = _start_confidence(prev, event_changed)
     elif (
@@ -235,7 +267,7 @@ def _apply_ring_snapshot(
         pause_started_at = None
 
     row.status = curr["status"]
-    row.observed_at = _to_naive_utc(observed_at)
+    row.observed_at = _to_naive_aest(observed_at)
 
     snapshot = dict(curr)
     if pause_started_at is not None:
